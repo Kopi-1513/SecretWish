@@ -1,5 +1,7 @@
 
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import Link from "next/link";
 import {
   Gift,
@@ -7,10 +9,30 @@ import {
   Heart,
   Plus,
   LogOut,
+  ArrowRight,
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/server";
 
-export default async function DashboardPage() {
+import { createClient } from "@/lib/supabase/server";
+import WishList from "./WishList";
+
+function DashboardLoading() {
+  return (
+    <main className="min-h-screen bg-[#08090d] text-[#f5e8d0]">
+      <div className="section-container py-16">
+        <div className="animate-pulse">
+          <div className="mb-4 h-4 w-48 rounded bg-white/10" />
+          <div className="mb-4 h-12 w-96 max-w-full rounded bg-white/10" />
+          <div className="h-5 w-72 max-w-full rounded bg-white/10" />
+          <div className="mt-12 h-72 max-w-2xl rounded-2xl bg-white/10" />
+        </div>
+      </div>
+    </main>
+  );
+}
+
+async function DashboardContent() {
+  await connection();
+
   const supabase = await createClient();
 
   const {
@@ -25,12 +47,23 @@ export default async function DashboardPage() {
   const fullName =
     user.user_metadata?.full_name || "SecretWish Creator";
 
+  // Retrieve only the current user's birthday wishes.
+  const { data: wishes, error: wishesError } = await supabase
+    .from("birthday_wishes")
+    .select(
+      "id, recipient_name, birthday_date, slug, is_published"
+    )
+    .eq("user_id", user.id);
+
+  if (wishesError) {
+    console.error("DASHBOARD WISH FETCH ERROR:", wishesError);
+  }
+
   return (
     <main className="min-h-screen bg-[#08090d] text-[#f5e8d0]">
-
+      {/* Header */}
       <header className="border-b border-white/[0.06]">
         <nav className="section-container flex h-20 items-center justify-between">
-
           <Link href="/" className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#d4af70]/30 bg-[#d4af70]/10">
               <Gift className="h-5 w-5 text-[#d4af70]" />
@@ -50,12 +83,11 @@ export default async function DashboardPage() {
               Sign out
             </button>
           </form>
-
         </nav>
       </header>
 
+      {/* Dashboard */}
       <section className="section-container py-16">
-
         <div className="mb-12">
           <p className="mb-3 text-xs tracking-[0.25em] text-[#d4af70]">
             YOUR PERSONAL SPACE
@@ -71,8 +103,8 @@ export default async function DashboardPage() {
           </p>
         </div>
 
+        {/* Create Wish Card */}
         <div className="glass-card max-w-2xl p-8">
-
           <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#d4af70]/10">
             <Heart size={28} className="text-[#d4af70]" />
           </div>
@@ -87,26 +119,43 @@ export default async function DashboardPage() {
             memories.
           </p>
 
-          <button
-            disabled
-            className="luxury-button mt-8 cursor-not-allowed opacity-60"
+          <Link
+            href="/dashboard/create"
+            className="luxury-button mt-8 inline-flex items-center gap-2 transition hover:brightness-110"
           >
             <Plus size={18} />
             Create Birthday Wish
             <Sparkles size={16} />
-          </button>
+            <ArrowRight size={16} />
+          </Link>
 
           <p className="mt-3 text-xs text-[#77717f]">
-            Birthday wish creation is coming in the next development phase.
+            Start creating a beautiful surprise for someone special.
           </p>
-
         </div>
 
+        {/* Birthday Wishes */}
+        {wishesError ? (
+          <div className="mt-12 rounded-xl border border-red-500/30 bg-red-500/10 p-5 text-sm text-red-400">
+            Unable to load your birthday wishes. Please refresh the page.
+          </div>
+        ) : (
+          <WishList initialWishes={wishes ?? []} />
+        )}
+
+        {/* User Information */}
         <p className="mt-10 text-xs text-[#77717f]">
           Signed in as: {user.email}
         </p>
-
       </section>
     </main>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<DashboardLoading />}>
+      <DashboardContent />
+    </Suspense>
   );
 }
