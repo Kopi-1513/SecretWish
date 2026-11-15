@@ -15,6 +15,9 @@ import {
   CheckCircle2,
   Music2,
   Volume2,
+  HeartCrack,
+  Mic,
+  Headphones,
 } from "lucide-react";
 
 type WishQuestion = {
@@ -25,6 +28,7 @@ type WishQuestion = {
 type WishDetails = {
   recipientName: string;
   birthdayDate: string;
+  remainingLives: number;
   questions: WishQuestion[];
 };
 
@@ -39,17 +43,25 @@ type PrivateMusic = {
   mimeType: string;
 };
 
+type PrivateVoice = {
+  url: string;
+  originalName: string;
+  mimeType: string;
+};
+
 type Surprise = {
   secretMessage: string;
   photos: PrivatePhoto[];
   music: PrivateMusic | null;
+  voice: PrivateVoice | null;
 };
 
 type ApiResult<T> = T & {
   error?: string;
+  remainingLives?: number;
+  lost?: boolean;
 };
 
-// Confetti pieces are generated once, outside the component.
 const confettiPieces = Array.from({ length: 65 }, (_, index) => ({
   id: index,
   left: `${(index * 37) % 100}%`,
@@ -73,12 +85,7 @@ function ConfettiCelebration() {
       {confettiPieces.map((piece) => (
         <motion.div
           key={piece.id}
-          initial={{
-            y: -30,
-            x: 0,
-            opacity: 0,
-            rotate: 0,
-          }}
+          initial={{ y: -30, x: 0, opacity: 0, rotate: 0 }}
           animate={{
             y: "110vh",
             x: [0, 35, -25, 30, -15],
@@ -114,10 +121,7 @@ function BirthdayCakeAnimation() {
         rotate: [0, 5, -5, 0],
         opacity: 1,
       }}
-      transition={{
-        duration: 1.3,
-        ease: "easeOut",
-      }}
+      transition={{ duration: 1.3, ease: "easeOut" }}
       className="relative mx-auto my-12 flex h-56 w-56 items-center justify-center"
     >
       <div className="absolute inset-0 rounded-full bg-[#d4af70]/10 blur-3xl" />
@@ -160,7 +164,6 @@ function BirthdayCakeAnimation() {
 
           <div className="relative h-16 w-40 overflow-hidden rounded-b-xl border-b-4 border-[#8f4f39] bg-gradient-to-r from-[#c98263] via-[#f0b28c] to-[#c98263]">
             <div className="absolute left-0 top-5 h-2 w-full bg-[#ffe4bb]/80" />
-
             <div className="absolute left-4 top-1 text-sm">✨</div>
             <div className="absolute right-5 top-2 text-sm">💖</div>
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-sm">
@@ -183,6 +186,110 @@ function BirthdayCakeAnimation() {
   );
 }
 
+function LivesDisplay({ remainingLives }: { remainingLives: number }) {
+  return (
+    <div className="mt-7 flex flex-col items-center">
+      <p className="mb-3 text-xs tracking-[0.25em] text-[#aaa2b2]">
+        YOUR REMAINING LIVES
+      </p>
+
+      <div className="flex items-center justify-center gap-4">
+        {[0, 1, 2].map((index) => {
+          const active = index < remainingLives;
+
+          return (
+            <motion.div
+              key={index}
+              initial={{ scale: 0.7, opacity: 0 }}
+              animate={{
+                scale: active ? 1 : 0.9,
+                opacity: 1,
+              }}
+              transition={{ duration: 0.3, delay: index * 0.08 }}
+            >
+              <Heart
+                size={34}
+                strokeWidth={1.7}
+                fill={active ? "#e85d75" : "transparent"}
+                className={
+                  active
+                    ? "text-[#e85d75] drop-shadow-[0_0_10px_rgba(232,93,117,0.35)]"
+                    : "text-[#62545e]"
+                }
+              />
+            </motion.div>
+          );
+        })}
+      </div>
+
+      <p className="mt-3 text-sm text-[#d4af70]">
+        {remainingLives} of 3 lives remaining
+      </p>
+    </div>
+  );
+}
+
+function LostWishScreen() {
+  return (
+    <motion.section
+      key="lost"
+      initial={{ opacity: 0, scale: 0.9, y: 25 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      className="mx-auto max-w-xl text-center"
+    >
+      <motion.div
+        initial={{ scale: 0, rotate: -20 }}
+        animate={{ scale: 1, rotate: 0 }}
+        transition={{ type: "spring", stiffness: 150, delay: 0.15 }}
+        className="mx-auto mb-8 flex h-24 w-24 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10"
+      >
+        <HeartCrack size={48} className="text-red-400" />
+      </motion.div>
+
+      <p className="mb-4 text-xs tracking-[0.35em] text-red-400">
+        ALL YOUR CHANCES ARE GONE
+      </p>
+
+      <h1 className="text-4xl font-bold leading-tight sm:text-5xl">
+        You Lost Your
+        <span className="mt-2 block text-red-400">Secret Wish</span>
+      </h1>
+
+      <div className="my-8 flex justify-center gap-4">
+        {[0, 1, 2].map((index) => (
+          <motion.div
+            key={index}
+            initial={{ scale: 1 }}
+            animate={{ scale: [1, 0.85, 1] }}
+            transition={{ duration: 0.7, delay: index * 0.15 }}
+          >
+            <HeartCrack size={30} className="text-red-500/50" />
+          </motion.div>
+        ))}
+      </div>
+
+      <div className="rounded-3xl border border-red-500/20 bg-[#151019] p-7 shadow-2xl sm:p-9">
+        <h2 className="text-xl font-semibold text-[#f5e8d0]">
+          The secret remains locked.
+        </h2>
+
+        <p className="mt-4 leading-8 text-[#aaa2b2]">
+          You used all three chances to answer the secret questions.
+          Unfortunately, this birthday surprise can no longer be unlocked.
+        </p>
+
+        <p className="mt-6 text-sm text-red-300">
+          All three hearts are broken. Better luck next time.
+        </p>
+      </div>
+
+      <p className="mt-8 text-xs tracking-widest text-[#77717f]">
+        SECRETWISH · SOME SECRETS ARE MEANT TO STAY SECRET
+      </p>
+    </motion.section>
+  );
+}
+
 export default function WishExperience({
   slug,
 }: {
@@ -198,7 +305,9 @@ export default function WishExperience({
   const [error, setError] = useState("");
   const [pageError, setPageError] = useState("");
 
-  // Load public wish information and question text.
+  const remainingLives = wish?.remainingLives ?? 3;
+  const hasLost = remainingLives <= 0;
+
   useEffect(() => {
     let active = true;
 
@@ -222,7 +331,14 @@ export default function WishExperience({
 
         if (!active) return;
 
-        setWish(result.wish);
+        setWish({
+          ...result.wish,
+          remainingLives: Math.max(
+            0,
+            Math.min(3, result.wish.remainingLives ?? 3)
+          ),
+        });
+
         setAnswers(result.wish.questions.map(() => ""));
       } catch (err) {
         if (!active) return;
@@ -250,12 +366,10 @@ export default function WishExperience({
     );
   }
 
-  async function handleVerification(
-    event: FormEvent<HTMLFormElement>
-  ) {
+  async function handleVerification(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!wish || verifying || surprise) return;
+    if (!wish || verifying || surprise || hasLost) return;
 
     if (answers.some((answer) => !answer.trim())) {
       setError("Please answer all the secret questions.");
@@ -282,7 +396,38 @@ export default function WishExperience({
         surprise: Surprise;
       }>;
 
+      if (typeof result.remainingLives === "number") {
+        setWish((current) =>
+          current
+            ? {
+                ...current,
+                remainingLives: Math.max(
+                  0,
+                  Math.min(3, result.remainingLives!)
+                ),
+              }
+            : current
+        );
+      }
+
       if (!response.ok) {
+        if (result.lost || result.remainingLives === 0) {
+          setError("");
+          return;
+        }
+
+        if (result.remainingLives === 2) {
+          setError("Retry! You only have two lives to get your wish.");
+          return;
+        }
+
+        if (result.remainingLives === 1) {
+          setError(
+            "Be careful! This is your last chance to get your secret wish."
+          );
+          return;
+        }
+
         throw new Error(
           result.error || "Your answers could not be verified."
         );
@@ -304,15 +449,11 @@ export default function WishExperience({
     }
   }
 
-  // Loading screen
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#08070d] text-[#d4af70]">
         <div className="text-center">
-          <Loader2
-            className="mx-auto mb-4 animate-spin"
-            size={34}
-          />
+          <Loader2 className="mx-auto mb-4 animate-spin" size={34} />
           <p className="text-sm tracking-[0.2em]">
             PREPARING YOUR SURPRISE
           </p>
@@ -321,7 +462,6 @@ export default function WishExperience({
     );
   }
 
-  // Invalid or unavailable wish
   if (pageError || !wish) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#08070d] px-5 text-[#f5e8d0]">
@@ -345,13 +485,11 @@ export default function WishExperience({
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#08070d] px-5 py-12 text-[#f5e8d0]">
-      {/* Background glow */}
       <div className="pointer-events-none absolute left-1/2 top-20 h-80 w-80 -translate-x-1/2 rounded-full bg-[#d4af70]/10 blur-[120px]" />
 
       <div className="pointer-events-none absolute bottom-0 right-0 h-80 w-80 rounded-full bg-purple-900/10 blur-[120px]" />
 
       <div className="relative mx-auto max-w-3xl">
-        {/* Branding */}
         <div className="mb-16 text-center">
           <div className="mb-3 inline-flex items-center gap-2 text-sm font-semibold tracking-[0.3em]">
             SECRET
@@ -364,8 +502,7 @@ export default function WishExperience({
         </div>
 
         <AnimatePresence mode="wait">
-          {/* STAGE 1: ENVELOPE */}
-          {!envelopeOpened && !surprise && (
+          {!envelopeOpened && !surprise && !hasLost && (
             <motion.section
               key="envelope"
               initial={{ opacity: 0, y: 25 }}
@@ -443,8 +580,7 @@ export default function WishExperience({
             </motion.section>
           )}
 
-          {/* STAGE 2: SECRET QUESTIONS */}
-          {envelopeOpened && !surprise && (
+          {envelopeOpened && !surprise && !hasLost && (
             <motion.section
               key="questions"
               initial={{ opacity: 0, y: 30 }}
@@ -472,6 +608,8 @@ export default function WishExperience({
                   Answer these special questions to unlock your
                   birthday surprise.
                 </p>
+
+                <LivesDisplay remainingLives={remainingLives} />
               </div>
 
               <form
@@ -511,17 +649,19 @@ export default function WishExperience({
                 </div>
 
                 {error && (
-                  <div
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
                     role="alert"
-                    className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400"
+                    className="mt-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm leading-6 text-red-300"
                   >
                     {error}
-                  </div>
+                  </motion.div>
                 )}
 
                 <button
                   type="submit"
-                  disabled={verifying}
+                  disabled={verifying || hasLost}
                   className="mt-8 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-[#e5c17e] to-[#a77b40] px-6 py-4 font-semibold text-[#171019] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {verifying ? (
@@ -547,7 +687,8 @@ export default function WishExperience({
             </motion.section>
           )}
 
-          {/* STAGE 3: BIRTHDAY REVEAL */}
+          {hasLost && !surprise && <LostWishScreen />}
+
           {surprise && (
             <motion.section
               key="reveal"
@@ -555,7 +696,6 @@ export default function WishExperience({
               animate={{ opacity: 1, scale: 1 }}
               className="text-center"
             >
-              {/* Celebration confetti */}
               <ConfettiCelebration />
 
               <motion.div
@@ -588,7 +728,6 @@ export default function WishExperience({
                   <Sparkles size={16} />
                 </div>
 
-                {/* Animated cake */}
                 <BirthdayCakeAnimation />
               </motion.div>
 
@@ -619,12 +758,67 @@ export default function WishExperience({
                 </div>
               </motion.div>
 
+              {/* Private voice message */}
+              {surprise.voice && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.65 }}
+                  className="relative z-10 mt-8 rounded-3xl border border-purple-400/30 bg-gradient-to-br from-[#211a2c] via-[#171321] to-[#111019] p-6 text-left shadow-[0_15px_60px_rgba(167,139,250,0.09)] sm:p-8"
+                >
+                  <div className="mb-5 flex items-center gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-purple-300/30 bg-purple-400/10">
+                      <Mic
+                        size={27}
+                        className="text-purple-300"
+                      />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="mb-1 text-xs tracking-[0.25em] text-purple-300">
+                        A PERSONAL MESSAGE
+                      </p>
+
+                      <h2 className="text-lg font-semibold text-[#f5e8d0]">
+                        A Voice Note Just for You
+                      </h2>
+
+                      <p className="mt-1 truncate text-sm text-[#aaa2b2]">
+                        {surprise.voice.originalName}
+                      </p>
+                    </div>
+
+                    <Headphones
+                      size={23}
+                      className="shrink-0 text-purple-300"
+                    />
+                  </div>
+
+                  <div className="rounded-2xl border border-purple-300/15 bg-black/20 p-4">
+                    <audio
+                      key={surprise.voice.url}
+                      controls
+                      preload="metadata"
+                      className="w-full"
+                      src={surprise.voice.url}
+                    >
+                      Your browser does not support audio playback.
+                    </audio>
+                  </div>
+
+                  <p className="mt-4 text-sm leading-6 text-[#c4b7d5]">
+                    Someone took a moment to record these words
+                    especially for you. Listen closely. 💜
+                  </p>
+                </motion.div>
+              )}
+
               {/* Private birthday music */}
               {surprise.music && (
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.7 }}
+                  transition={{ delay: surprise.voice ? 0.8 : 0.7 }}
                   className="relative z-10 mt-8 rounded-3xl border border-[#d4af70]/30 bg-gradient-to-br from-[#211a20] to-[#111019] p-6 text-left shadow-[0_15px_60px_rgba(212,175,112,0.07)] sm:p-8"
                 >
                   <div className="mb-5 flex items-center gap-3">
@@ -639,6 +833,7 @@ export default function WishExperience({
                       <h2 className="text-lg font-semibold">
                         A Song Just for You
                       </h2>
+
                       <p className="mt-1 truncate text-sm text-[#aaa2b2]">
                         {surprise.music.originalName}
                       </p>
@@ -671,7 +866,7 @@ export default function WishExperience({
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.8 }}
+                  transition={{ delay: surprise.music || surprise.voice ? 0.9 : 0.8 }}
                   className="relative z-10 mt-12"
                 >
                   <div className="mb-6 flex items-center justify-center gap-3">
@@ -689,7 +884,7 @@ export default function WishExperience({
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
                         transition={{
-                          delay: 0.9 + index * 0.15,
+                          delay: 1 + index * 0.15,
                         }}
                         className="overflow-hidden rounded-2xl border border-[#d4af70]/20 bg-[#111019]"
                       >
@@ -715,7 +910,7 @@ export default function WishExperience({
               <motion.div
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 1.1 }}
+                transition={{ delay: 1.2 }}
                 className="relative z-10 mt-12"
               >
                 <div className="mb-4 flex items-center justify-center gap-2 text-[#d4af70]">
@@ -733,7 +928,6 @@ export default function WishExperience({
           )}
         </AnimatePresence>
 
-        {/* Footer */}
         <footer className="relative mt-20 border-t border-white/[0.06] pt-7 text-center">
           <p className="text-xs tracking-widest text-[#77717f]">
             SECRETWISH · A SURPRISE WORTH REMEMBERING

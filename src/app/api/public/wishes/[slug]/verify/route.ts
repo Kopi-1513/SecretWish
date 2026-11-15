@@ -3,23 +3,17 @@ import { NextResponse } from "next/server";
 import { compare } from "bcryptjs";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 type RouteContext = {
   params: Promise<{ slug: string }>;
 };
 
 const verifySchema = z.object({
-  answers: z.array(
-    z.string().trim().min(1).max(200)
-  ).min(1).max(10),
+  answers: z.array(z.string().trim().min(1).max(200)).min(1).max(10),
 });
 
-// Temporary development rate limiter.
-// Use a persistent shared rate limiter before production.
-const attempts = new Map<
-  string,
-  { count: number; resetAt: number }
->();
+const attempts = new Map<string, { count: number; resetAt: number }>();
 
 const MAX_ATTEMPTS = 5;
 const WINDOW_MS = 15 * 60 * 1000;
@@ -30,6 +24,25 @@ function getRateLimitKey(request: Request, slug: string) {
   const ip = forwardedFor?.split(",")[0]?.trim() || "unknown";
 
   return `${slug}:${ip}`;
+}
+
+async function consumeLife(slug: string): Promise<number> {
+  const admin = createAdminClient();
+
+  const { data, error } = await admin.rpc("consume_wish_life", {
+    p_slug: slug,
+  });
+
+  if (error) {
+    console.error("CONSUME WISH LIFE ERROR:", error);
+    throw new Error("Unable to update remaining lives.");
+  }
+
+  if (typeof data !== "number") {
+    throw new Error("Unable to read remaining lives.");
+  }
+
+  return data;
 }
 
 export async function POST(
@@ -46,7 +59,7 @@ export async function POST(
       );
     }
 
-    // 1. Rate limit verification attempts
+    // 1. Rate limiting.
     const rateLimitKey = getRateLimitKey(request, slug);
     const now = Date.now();
 
@@ -63,9 +76,7 @@ export async function POST(
       attempts.set(rateLimitKey, current);
 
       return NextResponse.json(
-        {
-          error: "Too many attempts. Please try again in 15 minutes.",
-        },
+        { error: "Too many attempts. Please try again later." },
         {
           status: 429,
           headers: {
@@ -77,8 +88,18 @@ export async function POST(
       );
     }
 
-    // 2. Validate submitted answers
-    const body = await request.json();
+    // 2. Validate request body.
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
     const validation = verifySchema.safeParse(body);
 
     if (!validation.success) {
@@ -90,13 +111,16 @@ export async function POST(
 
     const { answers } = validation.data;
 
-    // 3. Initialize Supabase
     const supabase = await createClient();
 
-    // 4. Retrieve only a published wish
+    // 3. Find published wish.
+    // Celebration effect is retrieved here but never returned
+    // until all secret answers have been verified successfully.
     const { data: wish, error: wishError } = await supabase
       .from("birthday_wishes")
-      .select("id, secret_message")
+      .select(
+        "id, secret_message, remaining_lives, celebration_effect"
+      )
       .eq("slug", slug)
       .eq("is_published", true)
       .maybeSingle();
@@ -117,19 +141,28 @@ export async function POST(
       );
     }
 
-    // 5. Retrieve answer hashes on the server only
-    const { data: questions, error: questionsError } =
-      await supabase
-        .from("wish_questions")
-        .select("answer_hash, sort_order")
-        .eq("wish_id", wish.id)
-        .order("sort_order", { ascending: true });
+    // 4. Block wishes with no remaining lives.
+    if (wish.remaining_lives <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          lost: true,
+          remainingLives: 0,
+          error: "You lost your secret wish.",
+        },
+        { status: 403 }
+      );
+    }
+
+    // 5. Retrieve secret answer hashes.
+    const { data: questions, error: questionsError } = await supabase
+      .from("wish_questions")
+      .select("answer_hash, sort_order")
+      .eq("wish_id", wish.id)
+      .order("sort_order", { ascending: true });
 
     if (questionsError || !questions) {
-      console.error(
-        "VERIFY QUESTIONS ERROR:",
-        questionsError
-      );
+      console.error("VERIFY QUESTIONS ERROR:", questionsError);
 
       return NextResponse.json(
         { error: "Unable to verify the secret answers." },
@@ -137,45 +170,78 @@ export async function POST(
       );
     }
 
+    // 6. Compare all answers.
+    let allCorrect = false;
+
     if (
-      questions.length === 0 ||
-      answers.length !== questions.length
+      questions.length > 0 &&
+      answers.length === questions.length
     ) {
-      current.count += 1;
-      attempts.set(rateLimitKey, current);
-
-      return NextResponse.json(
-        { error: "The answers are incorrect. Please try again." },
-        { status: 401 }
+      const comparisons = await Promise.all(
+        questions.map((question, index) =>
+          compare(answers[index], question.answer_hash)
+        )
       );
+
+      allCorrect = comparisons.every(Boolean);
     }
 
-    // 6. Compare every answer with its bcrypt hash
-    const comparisons = await Promise.all(
-      questions.map((question, index) =>
-        compare(answers[index], question.answer_hash)
-      )
-    );
-
-    const allCorrect = comparisons.every(Boolean);
-
+    // 7. Wrong answers consume one persistent life.
     if (!allCorrect) {
+      const remainingLives = await consumeLife(slug);
+
       current.count += 1;
       attempts.set(rateLimitKey, current);
 
+      const lost = remainingLives <= 0;
+
       return NextResponse.json(
-        { error: "The answers are incorrect. Please try again." },
-        { status: 401 }
+        {
+          success: false,
+          lost,
+          remainingLives,
+          error: lost
+            ? "You lost your secret wish. All three lives are gone."
+            : remainingLives === 2
+              ? "Retry! You only have two lives to get your wish."
+              : "One last chance! You have only one life remaining.",
+        },
+        { status: lost ? 403 : 401 }
       );
     }
 
-    // Answers are correct.
-    // Reset this instance's attempt counter.
-    attempts.delete(rateLimitKey);
+    // 8. Recheck remaining lives before revealing private content.
+    const { data: latestWish, error: latestWishError } = await supabase
+      .from("birthday_wishes")
+      .select("remaining_lives")
+      .eq("id", wish.id)
+      .eq("is_published", true)
+      .maybeSingle();
 
-    console.info("SECRETWISH: Recipient verification successful");
+    if (latestWishError || !latestWish) {
+      console.error("LATEST WISH LOOKUP ERROR:", latestWishError);
 
-    // 7. Retrieve private photo paths
+      return NextResponse.json(
+        { error: "Unable to confirm this birthday wish." },
+        { status: 500 }
+      );
+    }
+
+    if (latestWish.remaining_lives <= 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          lost: true,
+          remainingLives: 0,
+          error: "You lost your secret wish.",
+        },
+        { status: 403 }
+      );
+    }
+
+    const admin = createAdminClient();
+
+    // 9. Retrieve private photos.
     const { data: photos, error: photosError } = await supabase
       .from("wish_photos")
       .select("storage_path, caption")
@@ -190,7 +256,6 @@ export async function POST(
       );
     }
 
-    // 8. Generate short-lived photo URLs
     const privatePhotos = await Promise.all(
       (photos ?? []).map(async (photo) => {
         const { data, error } = await supabase.storage
@@ -215,12 +280,12 @@ export async function POST(
       })
     );
 
-    // 9. Retrieve private music record
-    const { data: musicRecords, error: musicError } =
-      await supabase
-        .from("wish_music")
-        .select("storage_path, original_name, mime_type")
-        .eq("wish_id", wish.id);
+    // 10. Retrieve private background music.
+    const { data: musicRecords, error: musicError } = await supabase
+      .from("wish_music")
+      .select("storage_path, original_name, mime_type")
+      .eq("wish_id", wish.id)
+      .limit(1);
 
     if (musicError) {
       console.error("PRIVATE MUSIC LOOKUP ERROR:", musicError);
@@ -231,42 +296,117 @@ export async function POST(
       );
     }
 
-    // 10. Generate short-lived music URLs
-    const privateMusic = await Promise.all(
-      (musicRecords ?? []).map(async (music) => {
-        const { data, error } = await supabase.storage
-          .from("wish-music")
-          .createSignedUrl(
-            music.storage_path,
-            SIGNED_URL_SECONDS
-          );
+    let privateMusic = null;
 
-        if (error || !data?.signedUrl) {
-          throw new Error(
-            `Unable to create private music link: ${
-              error?.message || "Unknown error"
-            }`
-          );
-        }
+    const musicRecord = musicRecords?.[0];
 
-        return {
-          name: music.original_name,
-          mimeType: music.mime_type,
-          url: data.signedUrl,
-        };
-      })
-    );
+    if (musicRecord) {
+      const { data, error } = await supabase.storage
+        .from("wish-music")
+        .createSignedUrl(
+          musicRecord.storage_path,
+          SIGNED_URL_SECONDS
+        );
 
-    // 11. Return private content only after successful verification
-    return NextResponse.json({
-      success: true,
-      message: "Surprise unlocked successfully!",
-      surprise: {
-        secretMessage: wish.secret_message,
-        photos: privatePhotos,
-        music: privateMusic,
+      if (error || !data?.signedUrl) {
+        throw new Error(
+          `Unable to create private music link: ${
+            error?.message || "Unknown error"
+          }`
+        );
+      }
+
+      privateMusic = {
+        originalName: musicRecord.original_name,
+        mimeType: musicRecord.mime_type,
+        url: data.signedUrl,
+      };
+    }
+
+    // 11. Retrieve private voice message metadata.
+    const { data: voiceRecords, error: voiceError } = await admin
+      .from("wish_voice")
+      .select("storage_path, original_name, mime_type")
+      .eq("wish_id", wish.id)
+      .limit(1);
+
+    if (voiceError) {
+      console.error("PRIVATE VOICE LOOKUP ERROR:", voiceError);
+
+      return NextResponse.json(
+        { error: "Unable to retrieve the voice message." },
+        { status: 500 }
+      );
+    }
+
+    let privateVoice = null;
+
+    const voiceRecord = voiceRecords?.[0];
+
+    if (voiceRecord) {
+      // Generate a short-lived signed URL after verification.
+      const { data, error } = await admin.storage
+        .from("wish-voice")
+        .createSignedUrl(
+          voiceRecord.storage_path,
+          SIGNED_URL_SECONDS
+        );
+
+      if (error || !data?.signedUrl) {
+        console.error("VOICE SIGNED URL ERROR:", error);
+
+        throw new Error(
+          `Unable to create private voice link: ${
+            error?.message || "Unknown error"
+          }`
+        );
+      }
+
+      privateVoice = {
+        originalName: voiceRecord.original_name,
+        mimeType: voiceRecord.mime_type,
+        url: data.signedUrl,
+      };
+    }
+
+    // 12. Validate the stored effect.
+    const allowedEffects = [
+      "confetti",
+      "hearts",
+      "sparkles",
+      "fireworks",
+      "petals",
+    ] as const;
+
+    const celebrationEffect = allowedEffects.includes(
+      wish.celebration_effect
+    )
+      ? wish.celebration_effect
+      : "confetti";
+
+    // 13. Successful verification.
+    attempts.delete(rateLimitKey);
+
+    return NextResponse.json(
+      {
+        success: true,
+        message: "Surprise unlocked successfully!",
+        remainingLives: latestWish.remaining_lives,
+        surprise: {
+          secretMessage: wish.secret_message,
+          photos: privatePhotos,
+          music: privateMusic,
+          voice: privateVoice,
+          celebrationEffect,
+        },
       },
-    });
+      {
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate",
+          Pragma: "no-cache",
+        },
+      }
+    );
   } catch (error) {
     console.error("SECRET VERIFICATION ERROR:", error);
 

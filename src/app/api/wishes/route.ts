@@ -5,20 +5,34 @@ import { hash } from "bcryptjs";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 
+const celebrationEffectSchema = z.enum([
+  "confetti",
+  "hearts",
+  "sparkles",
+  "fireworks",
+  "petals",
+]);
+
 const createWishSchema = z.object({
   recipientName: z.string().trim().min(1).max(100),
+
   recipientEmail: z.union([
     z.string().trim().email().max(255),
     z.literal(""),
   ]).optional(),
+
   birthdayDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+
   secretMessage: z.string().trim().min(1).max(5000),
+
   questions: z.array(
     z.object({
       question: z.string().trim().min(1).max(200),
       answer: z.string().trim().min(1).max(200),
     })
   ).min(1).max(10),
+
+  celebrationEffect: celebrationEffectSchema.default("confetti"),
 });
 
 export async function POST(request: Request) {
@@ -33,13 +47,16 @@ export async function POST(request: Request) {
 
     if (authError || !user) {
       return NextResponse.json(
-        { error: "You must be logged in to create a birthday wish." },
+        {
+          error: "You must be logged in to create a birthday wish.",
+        },
         { status: 401 }
       );
     }
 
     // 2. Validate incoming data
     const body = await request.json();
+
     const validation = createWishSchema.safeParse(body);
 
     if (!validation.success) {
@@ -58,10 +75,13 @@ export async function POST(request: Request) {
       birthdayDate,
       secretMessage,
       questions,
+      celebrationEffect,
     } = validation.data;
 
     // 3. Validate the actual calendar date
-    const parsedDate = new Date(`${birthdayDate}T00:00:00.000Z`);
+    const parsedDate = new Date(
+      `${birthdayDate}T00:00:00.000Z`
+    );
 
     if (
       Number.isNaN(parsedDate.getTime()) ||
@@ -94,10 +114,11 @@ export async function POST(request: Request) {
         recipient_email: recipientEmail || null,
         birthday_date: birthdayDate,
         secret_message: secretMessage,
+        celebration_effect: celebrationEffect,
         slug,
         is_published: false,
       })
-      .select("id, slug")
+      .select("id, slug, celebration_effect")
       .single();
 
     if (wishError || !wish) {
@@ -134,7 +155,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 8. Return only safe information
+    // 8. Return safe information
     return NextResponse.json(
       {
         success: true,
@@ -142,15 +163,19 @@ export async function POST(request: Request) {
         wish: {
           id: wish.id,
           slug: wish.slug,
+          celebrationEffect: wish.celebration_effect,
         },
       },
       { status: 201 }
     );
+
   } catch (error) {
     console.error("CREATE WISH API ERROR:", error);
 
     return NextResponse.json(
-      { error: "An unexpected error occurred. Please try again." },
+      {
+        error: "An unexpected error occurred. Please try again.",
+      },
       { status: 500 }
     );
   }
