@@ -4,6 +4,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  deleteWishDraftMedia,
+  getWishDraftMedia,
+  saveWishDraftMedia,
+} from "@/lib/wish-draft-media";
+import {
   ArrowLeft,
   ArrowRight,
   ImagePlus,
@@ -21,14 +26,18 @@ import {
 type Photo = {
   id: string;
   name: string;
+  type: string;
+  size: number;
   dataUrl: string;
+  storageId: string;
 };
 
 type MusicDraft = {
   name: string;
-  dataUrl: string;
   type: string;
   size: number;
+  dataUrl: string;
+  storageId: string;
 };
 
 type WishDraft = {
@@ -38,8 +47,8 @@ type WishDraft = {
 };
 
 const MAX_PHOTOS = 5;
-const MAX_PHOTO_SIZE = 2 * 1024 * 1024;
-const MAX_MUSIC_SIZE = 3 * 1024 * 1024;
+const MAX_PHOTO_SIZE = 15 * 1024 * 1024;
+const MAX_MUSIC_SIZE = 8 * 1024 * 1024;
 
 const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
@@ -58,27 +67,6 @@ const ALLOWED_AUDIO_TYPES = [
   "audio/webm",
 ];
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      if (typeof reader.result !== "string") {
-        reject(new Error("Unable to read the selected file."));
-        return;
-      }
-
-      resolve(reader.result);
-    };
-
-    reader.onerror = () => {
-      reject(new Error("Unable to read the selected file."));
-    };
-
-    reader.readAsDataURL(file);
-  });
-}
-
 export default function WishPhotosPage() {
   const router = useRouter();
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -91,34 +79,120 @@ export default function WishPhotosPage() {
   const [musicVolume, setMusicVolume] = useState(0.7);
 
   useEffect(() => {
-    const savedDraft = sessionStorage.getItem("secretwish_draft");
+    let active = true;
+    const objectUrls: string[] = [];
 
-    if (!savedDraft) {
-      router.replace("/dashboard/create");
-      return;
-    }
+    async function loadDraft() {
+      const savedDraft = sessionStorage.getItem("secretwish_draft");
 
-    try {
-      const draft = JSON.parse(savedDraft) as WishDraft;
-
-      if (Array.isArray(draft.photos)) {
-        setPhotos(draft.photos);
+      if (!savedDraft) {
+        router.replace("/dashboard/create");
+        return;
       }
 
-      if (draft.music && typeof draft.music.dataUrl === "string") {
-        setMusic(draft.music);
-      }
+      try {
+        const draft = JSON.parse(savedDraft) as WishDraft;
+        const restoredPhotos: Photo[] = [];
 
-      setLoaded(true);
-    } catch {
-      router.replace("/dashboard/create");
+        for (const photo of draft.photos ?? []) {
+          // Support older drafts that stored data URLs.
+          if ("dataUrl" in photo && typeof photo.dataUrl === "string") {
+            const response = await fetch(photo.dataUrl);
+            const blob = await response.blob();
+            const storageId = photo.id;
+
+            await saveWishDraftMedia(storageId, blob);
+
+            const url = URL.createObjectURL(blob);
+            objectUrls.push(url);
+
+            restoredPhotos.push({
+              id: photo.id,
+              name: photo.name,
+              type: blob.type,
+              size: blob.size,
+              dataUrl: url,
+              storageId,
+            });
+          } else {
+            const storageId = (photo as Photo).storageId ?? photo.id;
+            const blob = await getWishDraftMedia(storageId);
+
+            if (!blob) continue;
+
+            const url = URL.createObjectURL(blob);
+            objectUrls.push(url);
+
+            restoredPhotos.push({
+              id: photo.id,
+              name: photo.name,
+              type: blob.type,
+              size: blob.size,
+              dataUrl: url,
+              storageId,
+            });
+          }
+        }
+
+        let restoredMusic: MusicDraft | null = null;
+
+        if (draft.music) {
+          const legacy = draft.music as MusicDraft;
+          let blob: Blob | null = null;
+          const storageId = legacy.storageId ?? crypto.randomUUID();
+
+          if (legacy.dataUrl) {
+            const response = await fetch(legacy.dataUrl);
+            blob = await response.blob();
+            await saveWishDraftMedia(storageId, blob);
+          } else {
+            blob = await getWishDraftMedia(storageId);
+          }
+
+          if (blob) {
+            const url = URL.createObjectURL(blob);
+            objectUrls.push(url);
+
+            restoredMusic = {
+              name: legacy.name,
+              type: blob.type || legacy.type,
+              size: blob.size,
+              dataUrl: url,
+              storageId,
+            };
+          }
+        }
+
+        if (!active) return;
+
+        setPhotos(restoredPhotos);
+        setMusic(restoredMusic);
+        setLoaded(true);
+      } catch (error) {
+        console.error("MEDIA DRAFT RESTORE ERROR:", error);
+
+        if (active) {
+          setError(
+            "Unable to restore your selected files. Please select them again."
+          );
+        }
+
+        if (active) setLoaded(true);
+      }
     }
+
+    void loadDraft();
+
+    return () => {
+      active = false;
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [router]);
 
   async function handlePhotoSelection(
     event: React.ChangeEvent<HTMLInputElement>
   ) {
-    const files = Array.from(event.target.files || []);
+    const files = Array.from(event.target.files ?? []);
     event.target.value = "";
 
     if (!files.length) return;
@@ -134,18 +208,19 @@ export default function WishPhotosPage() {
 
     const selected = files.slice(0, remaining);
 
-    if (files.length > remaining) {
-      setError(`Only ${remaining} more photo(s) can be added.`);
-    }
-
     const validFiles = selected.filter((file) => {
       if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-        setError("Only JPG, PNG and WEBP images are allowed.");
+        setError(`${file.name}: only JPG, PNG and WEBP images are allowed.`);
+        return false;
+      }
+
+      if (file.size === 0) {
+        setError(`${file.name}: the selected file is empty.`);
         return false;
       }
 
       if (file.size > MAX_PHOTO_SIZE) {
-        setError(`${file.name} must be smaller than 2 MB.`);
+        setError(`${file.name} exceeds the 15 MB per-photo limit.`);
         return false;
       }
 
@@ -153,21 +228,47 @@ export default function WishPhotosPage() {
     });
 
     try {
-      const newPhotos = await Promise.all(
-        validFiles.map(async (file): Promise<Photo> => ({
-          id: crypto.randomUUID(),
+      const newPhotos: Photo[] = [];
+
+      for (const file of validFiles) {
+        const storageId = crypto.randomUUID();
+
+        await saveWishDraftMedia(storageId, file);
+
+        newPhotos.push({
+          id: storageId,
+          storageId,
           name: file.name,
-          dataUrl: await readFileAsDataUrl(file),
-        }))
+          type: file.type,
+          size: file.size,
+          dataUrl: URL.createObjectURL(file),
+        });
+      }
+
+      setPhotos((current) =>
+        [...current, ...newPhotos].slice(0, MAX_PHOTOS)
       );
 
-      setPhotos((current) => [...current, ...newPhotos]);
-    } catch {
-      setError("Something went wrong while reading your photos.");
+      if (files.length > remaining) {
+        setError(`Only ${remaining} more photo(s) can be added.`);
+      }
+    } catch (error) {
+      console.error("PHOTO STORAGE ERROR:", error);
+      setError(
+        "Unable to save the selected photos in browser storage. Please try again."
+      );
     }
   }
 
   function removePhoto(id: string) {
+    const photo = photos.find((item) => item.id === id);
+
+    if (photo) {
+      URL.revokeObjectURL(photo.dataUrl);
+    }
+
+    void deleteWishDraftMedia(photo?.storageId ?? id);
+
     setPhotos((current) =>
       current.filter((photo) => photo.id !== id)
     );
@@ -194,23 +295,32 @@ export default function WishPhotosPage() {
     }
 
     if (file.size > MAX_MUSIC_SIZE) {
-      setError("Birthday music must be smaller than 3 MB.");
+      setError("Birthday music exceeds the 8 MB limit.");
       return;
     }
 
     try {
-      const dataUrl = await readFileAsDataUrl(file);
+      if (music) {
+        URL.revokeObjectURL(music.dataUrl);
+        await deleteWishDraftMedia(music.storageId);
+      }
+
+      const storageId = crypto.randomUUID();
+
+      await saveWishDraftMedia(storageId, file);
 
       setMusic({
         name: file.name,
-        dataUrl,
+        dataUrl: URL.createObjectURL(file),
         type: file.type,
         size: file.size,
+        storageId,
       });
 
       setMusicPlaying(false);
-    } catch {
-      setError("Unable to read the selected music file.");
+    } catch (error) {
+      console.error("MUSIC STORAGE ERROR:", error);
+      setError("Unable to save the selected music file.");
     }
   }
 
@@ -218,6 +328,11 @@ export default function WishPhotosPage() {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
+    }
+
+    if (music) {
+      URL.revokeObjectURL(music.dataUrl);
+      void deleteWishDraftMedia(music.storageId);
     }
 
     setMusic(null);
@@ -265,15 +380,30 @@ export default function WishPhotosPage() {
         "secretwish_draft",
         JSON.stringify({
           ...draft,
-          photos,
-          music,
+          photos: photos.map(
+            ({ id, name, type, size, storageId }) => ({
+              id,
+              name,
+              type,
+              size,
+              storageId,
+            })
+          ),
+          music: music
+            ? {
+                name: music.name,
+                type: music.type,
+                size: music.size,
+                storageId: music.storageId,
+              }
+            : null,
         })
       );
 
       router.push("/dashboard/create/review");
     } catch {
       setError(
-        "Unable to save your draft. Your selected files may exceed browser storage limits."
+        "Unable to save your draft. Please try again."
       );
     }
   }
@@ -360,7 +490,7 @@ export default function WishPhotosPage() {
               </h3>
 
               <p className="mt-2 text-sm text-[#918b99]">
-                JPG, PNG, WEBP · Maximum 2 MB each
+                JPG, PNG, WEBP · Maximum 15 MB each · Up to 5 photos
               </p>
 
               <input
@@ -450,7 +580,7 @@ export default function WishPhotosPage() {
               </p>
 
               <p className="mt-1 text-xs text-[#77717f]">
-                Maximum 3 MB · Optional
+                Maximum 8 MB · Optional
               </p>
 
               <input
