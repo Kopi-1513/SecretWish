@@ -1,8 +1,12 @@
-
 "use client";
 
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  clearWishDraftMedia,
+  getWishDraftMedia,
+  saveWishDraftMedia,
+} from "@/lib/wish-draft-media";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -32,6 +36,9 @@ type Photo = {
   id: string;
   name: string;
   dataUrl: string;
+  storageId?: string;
+  type?: string;
+  size?: number;
 };
 
 type MusicDraft = {
@@ -39,6 +46,7 @@ type MusicDraft = {
   dataUrl: string;
   type: string;
   size: number;
+  storageId?: string;
 };
 
 type VoiceDraft = {
@@ -47,6 +55,51 @@ type VoiceDraft = {
   type: string;
   size: number;
 };
+
+type CelebrationEffect =
+  | "confetti"
+  | "hearts"
+  | "sparkles"
+  | "fireworks"
+  | "petals";
+
+const CELEBRATION_EFFECTS: {
+  id: CelebrationEffect;
+  name: string;
+  description: string;
+  symbol: string;
+}[] = [
+  {
+    id: "confetti",
+    name: "Confetti Explosion",
+    description: "A joyful burst of colourful confetti.",
+    symbol: "🎉",
+  },
+  {
+    id: "hearts",
+    name: "Floating Hearts",
+    description: "Romantic hearts gently float across the screen.",
+    symbol: "💗",
+  },
+  {
+    id: "sparkles",
+    name: "Golden Sparkles",
+    description: "Elegant golden sparkles reveal the surprise.",
+    symbol: "✨",
+  },
+  {
+    id: "fireworks",
+    name: "Fireworks",
+    description: "A spectacular birthday-night celebration.",
+    symbol: "🎆",
+  },
+  {
+    id: "petals",
+    name: "Falling Petals",
+    description: "Soft flower petals drift down beautifully.",
+    symbol: "🌸",
+  },
+];
 
 type WishDraft = {
   recipientName: string;
@@ -60,6 +113,7 @@ type WishDraft = {
   photos: Photo[];
   music?: MusicDraft | null;
   voice?: VoiceDraft | null;
+  celebrationEffect?: CelebrationEffect;
 };
 
 type CreatedWish = {
@@ -72,8 +126,8 @@ type CreatedWish = {
   voiceName: string | null;
 };
 
-const MAX_PHOTO_SIZE = 2 * 1024 * 1024;
-const MAX_MUSIC_SIZE = 3 * 1024 * 1024;
+const MAX_PHOTO_SIZE = 15 * 1024 * 1024;
+const MAX_MUSIC_SIZE = 8 * 1024 * 1024;
 const MAX_VOICE_SIZE = 2 * 1024 * 1024;
 
 const STORAGE_BUCKET = "wish-photos";
@@ -194,39 +248,205 @@ export default function ReviewWishPage() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   useEffect(() => {
-    const savedDraft = sessionStorage.getItem("secretwish_draft");
+    let active = true;
+    const objectUrls: string[] = [];
 
-    if (!savedDraft) {
-      router.replace("/dashboard/create");
-      return;
-    }
+    async function loadDraft() {
+      const savedDraft = sessionStorage.getItem("secretwish_draft");
 
-    try {
-      const parsed = JSON.parse(savedDraft) as WishDraft;
-
-      if (
-        !parsed.recipientName ||
-        !parsed.birthdayDate ||
-        !parsed.secretMessage ||
-        !Array.isArray(parsed.questions) ||
-        !Array.isArray(parsed.photos) ||
-        parsed.questions.length === 0
-      ) {
+      if (!savedDraft) {
         router.replace("/dashboard/create");
         return;
       }
 
-      setDraft({
-        ...parsed,
-        music: parsed.music ?? null,
-        voice: parsed.voice ?? null,
-      });
+      try {
+        const parsed = JSON.parse(savedDraft) as WishDraft;
 
-      setLoaded(true);
-    } catch (error) {
-      console.error("DRAFT LOADING ERROR:", error);
-      router.replace("/dashboard/create");
+        if (
+          !parsed.recipientName ||
+          !parsed.birthdayDate ||
+          !parsed.secretMessage ||
+          !Array.isArray(parsed.questions) ||
+          !Array.isArray(parsed.photos) ||
+          parsed.questions.length === 0
+        ) {
+          router.replace("/dashboard/create");
+          return;
+        }
+
+        const restoredPhotos: Photo[] = [];
+        const missingPhotos: string[] = [];
+
+        // Restore each photo using every known key before declaring it missing.
+        // This supports current drafts and drafts saved by earlier versions.
+        for (const photo of parsed.photos) {
+          const candidateIds = Array.from(
+            new Set([photo.storageId, photo.id].filter(
+              (value): value is string =>
+                typeof value === "string" && value.length > 0
+            ))
+          );
+
+          let blob: Blob | null = null;
+          let resolvedStorageId = candidateIds[0] ?? photo.id;
+
+          for (const candidateId of candidateIds) {
+            try {
+              blob = await getWishDraftMedia(candidateId);
+              if (blob) {
+                resolvedStorageId = candidateId;
+                break;
+              }
+            } catch (storageError) {
+              console.error(
+                "INDEXEDDB PHOTO LOOKUP ERROR:",
+                photo.name,
+                candidateId,
+                storageError
+              );
+            }
+          }
+
+          // Support legacy drafts that still contain a data URL.
+          if (!blob && typeof photo.dataUrl === "string" && photo.dataUrl) {
+            try {
+              const response = await fetch(photo.dataUrl);
+              if (response.ok) {
+                blob = await response.blob();
+                await saveWishDraftMedia(resolvedStorageId, blob);
+              }
+            } catch (migrationError) {
+              console.error("PHOTO DATA URL MIGRATION ERROR:", photo.name, migrationError);
+            }
+          }
+
+          if (!blob) {
+            missingPhotos.push(photo.name || photo.id);
+            continue;
+          }
+
+          if (!blob.type.startsWith("image/")) {
+            console.error("RESTORED FILE IS NOT AN IMAGE:", photo.name, blob.type);
+            missingPhotos.push(photo.name || photo.id);
+            continue;
+          }
+
+          const previewUrl = URL.createObjectURL(blob);
+          objectUrls.push(previewUrl);
+
+          restoredPhotos.push({
+            id: photo.id || resolvedStorageId,
+            name: photo.name || "Photo",
+            dataUrl: previewUrl,
+            storageId: resolvedStorageId,
+            type: blob.type,
+            size: blob.size,
+          });
+        }
+
+        if (missingPhotos.length > 0) {
+          console.error("PHOTOS NOT FOUND IN INDEXEDDB:", {
+            missingPhotos,
+            savedPhotoMetadata: parsed.photos.map((photo) => ({
+              id: photo.id,
+              storageId: photo.storageId,
+              hasDataUrl: Boolean(photo.dataUrl),
+            })),
+          });
+        }
+
+        let restoredMusic: MusicDraft | null = null;
+
+        if (parsed.music) {
+          const storageId = parsed.music.storageId ?? crypto.randomUUID();
+          let musicBlob: Blob | null = null;
+
+          if (parsed.music.storageId || !parsed.music.dataUrl) {
+            musicBlob = await getWishDraftMedia(storageId);
+          } else {
+            const response = await fetch(parsed.music.dataUrl);
+            if (response.ok) {
+              musicBlob = await response.blob();
+              await saveWishDraftMedia(storageId, musicBlob);
+            }
+          }
+
+          if (!musicBlob) {
+            throw new Error("Selected music data is missing.");
+          }
+
+          const dataUrl = URL.createObjectURL(musicBlob);
+          objectUrls.push(dataUrl);
+
+          restoredMusic = {
+            name: parsed.music.name,
+            dataUrl,
+            type: musicBlob.type || parsed.music.type,
+            size: musicBlob.size,
+            storageId,
+          };
+        }
+
+        if (!active) {
+          objectUrls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
+
+        const restoredDraft: WishDraft = {
+          ...parsed,
+          photos: restoredPhotos,
+          music: restoredMusic,
+          voice: parsed.voice ?? null,
+          celebrationEffect: parsed.celebrationEffect ?? "confetti",
+        };
+
+        setDraft(restoredDraft);
+
+        if (missingPhotos.length > 0) {
+          setApiError(
+            `Could not restore these photo(s): ${missingPhotos.join(", ")}. Go back to Memories and select them again.`
+          );
+        }
+
+        // Keep only media IDs and metadata in sessionStorage, never large data URLs.
+        sessionStorage.setItem(
+          "secretwish_draft",
+          JSON.stringify({
+            ...restoredDraft,
+            photos: restoredPhotos.map(({ id, name, storageId, type, size }) => ({
+              id, name, storageId, type, size,
+            })),
+            music: restoredMusic
+              ? {
+                  name: restoredMusic.name,
+                  type: restoredMusic.type,
+                  size: restoredMusic.size,
+                  storageId: restoredMusic.storageId,
+                }
+              : null,
+          })
+        );
+
+        setLoaded(true);
+      } catch (error) {
+        console.error("DRAFT LOADING ERROR:", error);
+        if (active) {
+          setApiError(
+            error instanceof Error
+              ? error.message
+              : "Unable to restore your selected media."
+          );
+          setLoaded(true);
+        }
+      }
     }
+
+    void loadDraft();
+
+    return () => {
+      active = false;
+      objectUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, [router]);
 
   useEffect(() => {
@@ -236,6 +456,9 @@ export default function ReviewWishPage() {
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
+
+      // Revoke only object URLs; voice previews are data URLs and are unaffected.
+      // The review media URLs are also revoked by the draft-loading effect cleanup.
     };
   }, []);
 
@@ -251,12 +474,31 @@ export default function ReviewWishPage() {
       try {
         sessionStorage.setItem(
           "secretwish_draft",
-          JSON.stringify(updated)
+          JSON.stringify({
+            ...updated,
+            photos: updated.photos.map(
+              ({ id, name, storageId, type, size }) => ({
+                id,
+                name,
+                storageId,
+                type,
+                size,
+              })
+            ),
+            music: updated.music
+              ? {
+                  name: updated.music.name,
+                  type: updated.music.type,
+                  size: updated.music.size,
+                  storageId: updated.music.storageId,
+                }
+              : null,
+          })
         );
       } catch (error) {
         console.error("DRAFT STORAGE ERROR:", error);
         setApiError(
-          "Browser storage is full. Please remove some large photos or audio files and try again."
+          "Unable to save the draft details. Please try again."
         );
       }
 
@@ -550,8 +792,7 @@ export default function ReviewWishPage() {
       remainingSeconds
     ).padStart(2, "0")}`;
   }
-
-  async function handleCreateWish() {
+    async function handleCreateWish() {
     if (!draft || saving || createdWish) return;
 
     setSaving(true);
@@ -575,6 +816,10 @@ export default function ReviewWishPage() {
       console.info("SECRETWISH: Selected photos:", draft.photos.length);
       console.info("SECRETWISH: Music selected:", !!draft.music);
       console.info("SECRETWISH: Voice selected:", !!draft.voice);
+      console.info(
+        "SECRETWISH: Celebration effect:",
+        draft.celebrationEffect ?? "confetti"
+      );
 
       // 1. Initialize Supabase client.
       supabase = createClient();
@@ -598,17 +843,33 @@ export default function ReviewWishPage() {
       }[] = [];
 
       for (const photo of draft.photos) {
-        if (!photo.dataUrl) {
-          throw new Error(`Photo data is missing: ${photo.name}`);
+        let photoBlob: Blob | null = null;
+
+        const candidateIds = Array.from(
+          new Set([photo.storageId, photo.id].filter(
+            (value): value is string =>
+              typeof value === "string" && value.length > 0
+          ))
+        );
+
+        for (const candidateId of candidateIds) {
+          photoBlob = await getWishDraftMedia(candidateId);
+          if (photoBlob) break;
         }
 
-        const photoResponse = await fetch(photo.dataUrl);
-
-        if (!photoResponse.ok) {
-          throw new Error(`Unable to read photo: ${photo.name}`);
+        if (!photoBlob && photo.dataUrl) {
+          const photoResponse = await fetch(photo.dataUrl);
+          if (photoResponse.ok) photoBlob = await photoResponse.blob();
         }
 
-        const blob = await photoResponse.blob();
+        if (!photoBlob) {
+          throw new Error(
+            `Photo data is missing: ${photo.name}. The browser draft no longer contains this file. Please go back to Memories and select it again.`
+          );
+        }
+
+        const blob = photoBlob;
+
 
         if (!ALLOWED_IMAGE_TYPES.includes(blob.type)) {
           throw new Error(
@@ -621,7 +882,7 @@ export default function ReviewWishPage() {
         }
 
         if (blob.size > MAX_PHOTO_SIZE) {
-          throw new Error(`${photo.name} exceeds the 2 MB limit.`);
+          throw new Error(`${photo.name} exceeds the 15 MB per-photo limit.`);
         }
 
         validatedPhotos.push({
@@ -639,11 +900,17 @@ export default function ReviewWishPage() {
       } | null = null;
 
       if (draft.music) {
-        if (!draft.music.dataUrl) {
-          throw new Error("Selected music data is missing.");
+        let musicBlob: Blob | null = null;
+
+        if (draft.music.storageId) {
+          musicBlob = await getWishDraftMedia(draft.music.storageId);
+        } else if (draft.music.dataUrl) {
+          musicBlob = await dataUrlToBlob(draft.music.dataUrl);
         }
 
-        const musicBlob = await dataUrlToBlob(draft.music.dataUrl);
+        if (!musicBlob) {
+          throw new Error("Selected music data is missing.");
+        }
         const mimeType = normalizeAudioType(
           musicBlob.type || draft.music.type
         );
@@ -663,7 +930,7 @@ export default function ReviewWishPage() {
         }
 
         if (musicBlob.size > MAX_MUSIC_SIZE) {
-          throw new Error("Music must be smaller than 3 MB.");
+          throw new Error("Music must be smaller than 8 MB.");
         }
 
         validatedMusic = {
@@ -716,7 +983,15 @@ export default function ReviewWishPage() {
         };
       }
 
-      // 6. Create birthday wish through the API.
+      // 6. Validate celebration effect.
+      const selectedEffect: CelebrationEffect =
+        CELEBRATION_EFFECTS.some(
+          (effect) => effect.id === draft.celebrationEffect
+        )
+          ? draft.celebrationEffect!
+          : "confetti";
+
+      // 7. Create birthday wish through the API.
       const response = await fetch("/api/wishes", {
         method: "POST",
         headers: {
@@ -728,6 +1003,7 @@ export default function ReviewWishPage() {
           birthdayDate: draft.birthdayDate,
           secretMessage: draft.secretMessage,
           questions: draft.questions,
+          celebrationEffect: selectedEffect,
         }),
       });
 
@@ -763,7 +1039,7 @@ export default function ReviewWishPage() {
 
       console.info("SECRETWISH: Wish created:", wishId);
 
-      // 7. Upload photos to private Supabase Storage.
+      // 8. Upload photos to private Supabase Storage.
       for (const photo of validatedPhotos) {
         const extension =
           photo.blob.type === "image/jpeg"
@@ -805,7 +1081,7 @@ export default function ReviewWishPage() {
         }
       }
 
-      // 8. Upload optional background music.
+      // 9. Upload optional background music.
       if (validatedMusic) {
         const storagePath =
           `${wishId}/${crypto.randomUUID()}.${validatedMusic.extension}`;
@@ -841,7 +1117,7 @@ export default function ReviewWishPage() {
         }
       }
 
-      // 9. Upload optional voice message to private storage.
+      // 10. Upload optional voice message to private storage.
       if (validatedVoice) {
         const storagePath =
           `${wishId}/${crypto.randomUUID()}.${validatedVoice.extension}`;
@@ -877,7 +1153,7 @@ export default function ReviewWishPage() {
         }
       }
 
-      // 10. Show success only after every operation succeeds.
+      // 11. Show success only after every operation succeeds.
       setCreatedWish({
         id: wishId,
         slug: result.wish.slug,
@@ -888,13 +1164,17 @@ export default function ReviewWishPage() {
         voiceName: validatedVoice?.name ?? null,
       });
 
+      await clearWishDraftMedia([
+        ...draft.photos.map((photo) => photo.storageId ?? photo.id),
+        ...(draft.music?.storageId ? [draft.music.storageId] : []),
+      ]);
       sessionStorage.removeItem("secretwish_draft");
 
       console.info("SECRETWISH: Wish creation completed successfully");
     } catch (error) {
       console.error("BIRTHDAY WISH CREATION ERROR:", error);
 
-      // 11. Roll back partial uploads and records.
+      // 12. Roll back partial uploads and records.
       if (wishId && supabase) {
         if (uploadedPhotoPaths.length > 0) {
           const { error: cleanupError } = await supabase.storage
@@ -972,8 +1252,7 @@ export default function ReviewWishPage() {
       setSaving(false);
     }
   }
-
-  if (!loaded || !draft) {
+    if (!loaded || !draft) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#08090d] text-[#d4af70]">
         Preparing your birthday surprise...
@@ -1301,7 +1580,9 @@ export default function ReviewWishPage() {
             </div>
 
             <div>
-              <h2 className="text-xl font-semibold">Personal Voice Message</h2>
+              <h2 className="text-xl font-semibold">
+                Personal Voice Message
+              </h2>
               <p className="mt-1 text-xs text-[#918b99]">
                 Let them hear your voice after unlocking the surprise.
               </p>
@@ -1444,6 +1725,91 @@ export default function ReviewWishPage() {
           </p>
         </section>
 
+        {/* Custom celebration effects */}
+        <section className="mb-6 rounded-3xl border border-[#d4af70]/30 bg-[#111219] p-6 sm:p-8">
+          <div className="mb-6 flex items-center gap-3">
+            <div className="rounded-xl bg-[#d4af70]/10 p-3 text-[#d4af70]">
+              <Sparkles size={23} />
+            </div>
+
+            <div>
+              <h2 className="text-xl font-semibold">
+                Custom Celebration Effect
+              </h2>
+              <p className="mt-1 text-xs text-[#918b99]">
+                Choose how the birthday surprise should be celebrated.
+              </p>
+            </div>
+          </div>
+
+          <div className="mb-5 rounded-xl border border-[#d4af70]/20 bg-[#d4af70]/5 p-4">
+            <p className="text-sm leading-6 text-[#d8cdbb]">
+              Your selected effect will appear only to the recipient after
+              they successfully unlock the secret surprise. It will not
+              appear in your creator dashboard.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {CELEBRATION_EFFECTS.map((effect) => {
+              const selected =
+                (draft.celebrationEffect ?? "confetti") === effect.id;
+
+              return (
+                <button
+                  key={effect.id}
+                  type="button"
+                  disabled={saving || !!createdWish}
+                  onClick={() => {
+                    setApiError("");
+                    updateDraft({
+                      celebrationEffect: effect.id,
+                    });
+                  }}
+                  className={`group relative flex items-center gap-4 rounded-2xl border p-4 text-left transition duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${
+                    selected
+                      ? "border-[#d4af70] bg-[#d4af70]/10 shadow-[0_0_25px_rgba(212,175,112,0.08)]"
+                      : "border-[#38343b] bg-[#090a10] hover:border-[#d4af70]/50 hover:bg-[#d4af70]/5"
+                  }`}
+                >
+                  <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-[#d4af70]/10 text-3xl">
+                    {effect.symbol}
+                  </span>
+
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-semibold text-[#f5e8d0]">
+                      {effect.name}
+                    </span>
+                    <span className="mt-1 block text-xs leading-5 text-[#918b99]">
+                      {effect.description}
+                    </span>
+                  </span>
+
+                  <span
+                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
+                      selected
+                        ? "border-[#d4af70] bg-[#d4af70] text-[#111019]"
+                        : "border-[#625b64] text-transparent"
+                    }`}
+                  >
+                    {selected && <CheckCircle2 size={16} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <p className="mt-5 text-xs leading-5 text-[#918b99]">
+            Selected effect:{" "}
+            <span className="font-semibold text-[#d4af70]">
+              {CELEBRATION_EFFECTS.find(
+                (effect) =>
+                  effect.id === (draft.celebrationEffect ?? "confetti")
+              )?.name ?? "Confetti Explosion"}
+            </span>
+          </p>
+        </section>
+
         {/* Information */}
         <div className="mb-7 flex gap-3 rounded-2xl border border-[#d4af70]/20 bg-[#d4af70]/5 p-5">
           <CheckCircle2
@@ -1456,10 +1822,10 @@ export default function ReviewWishPage() {
               Your surprise is almost ready!
             </h3>
             <p className="mt-1 text-xs leading-6 text-[#a6a0ad]">
-              Your birthday details and secret questions will be saved
-              securely. Your selected photos, music and optional voice
-              message will be uploaded to private storage when you create
-              your wish.
+              Your birthday details, secret questions and selected celebration
+              effect will be saved. Your selected photos, music and optional
+              voice message will be uploaded to private storage when you
+              create your wish.
             </p>
           </div>
         </div>
