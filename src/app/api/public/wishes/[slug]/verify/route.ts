@@ -2,7 +2,6 @@
 import { NextResponse } from "next/server";
 import { compare } from "bcryptjs";
 import { z } from "zod";
-import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 type RouteContext = {
@@ -26,9 +25,10 @@ function getRateLimitKey(request: Request, slug: string) {
   return `${slug}:${ip}`;
 }
 
-async function consumeLife(slug: string): Promise<number> {
-  const admin = createAdminClient();
-
+async function consumeLife(
+  admin: ReturnType<typeof createAdminClient>,
+  slug: string
+): Promise<number> {
   const { data, error } = await admin.rpc("consume_wish_life", {
     p_slug: slug,
   });
@@ -111,12 +111,13 @@ export async function POST(
 
     const { answers } = validation.data;
 
-    const supabase = await createClient();
+    // IMPORTANT:
+    // Use the admin client for all database and private storage
+    // operations. Public recipients do not need a login session.
+    const admin = createAdminClient();
 
     // 3. Find published wish.
-    // Celebration effect is retrieved here but never returned
-    // until all secret answers have been verified successfully.
-    const { data: wish, error: wishError } = await supabase
+    const { data: wish, error: wishError } = await admin
       .from("birthday_wishes")
       .select(
         "id, secret_message, remaining_lives, celebration_effect"
@@ -155,7 +156,7 @@ export async function POST(
     }
 
     // 5. Retrieve secret answer hashes.
-    const { data: questions, error: questionsError } = await supabase
+    const { data: questions, error: questionsError } = await admin
       .from("wish_questions")
       .select("answer_hash, sort_order")
       .eq("wish_id", wish.id)
@@ -188,7 +189,7 @@ export async function POST(
 
     // 7. Wrong answers consume one persistent life.
     if (!allCorrect) {
-      const remainingLives = await consumeLife(slug);
+      const remainingLives = await consumeLife(admin, slug);
 
       current.count += 1;
       attempts.set(rateLimitKey, current);
@@ -211,7 +212,7 @@ export async function POST(
     }
 
     // 8. Recheck remaining lives before revealing private content.
-    const { data: latestWish, error: latestWishError } = await supabase
+    const { data: latestWish, error: latestWishError } = await admin
       .from("birthday_wishes")
       .select("remaining_lives")
       .eq("id", wish.id)
@@ -239,10 +240,8 @@ export async function POST(
       );
     }
 
-    const admin = createAdminClient();
-
     // 9. Retrieve private photos.
-    const { data: photos, error: photosError } = await supabase
+    const { data: photos, error: photosError } = await admin
       .from("wish_photos")
       .select("storage_path, caption")
       .eq("wish_id", wish.id);
@@ -258,7 +257,7 @@ export async function POST(
 
     const privatePhotos = await Promise.all(
       (photos ?? []).map(async (photo) => {
-        const { data, error } = await supabase.storage
+        const { data, error } = await admin.storage
           .from("wish-photos")
           .createSignedUrl(
             photo.storage_path,
@@ -281,7 +280,7 @@ export async function POST(
     );
 
     // 10. Retrieve private background music.
-    const { data: musicRecords, error: musicError } = await supabase
+    const { data: musicRecords, error: musicError } = await admin
       .from("wish_music")
       .select("storage_path, original_name, mime_type")
       .eq("wish_id", wish.id)
@@ -301,7 +300,7 @@ export async function POST(
     const musicRecord = musicRecords?.[0];
 
     if (musicRecord) {
-      const { data, error } = await supabase.storage
+      const { data, error } = await admin.storage
         .from("wish-music")
         .createSignedUrl(
           musicRecord.storage_path,
@@ -344,7 +343,6 @@ export async function POST(
     const voiceRecord = voiceRecords?.[0];
 
     if (voiceRecord) {
-      // Generate a short-lived signed URL after verification.
       const { data, error } = await admin.storage
         .from("wish-voice")
         .createSignedUrl(
@@ -369,7 +367,7 @@ export async function POST(
       };
     }
 
-    // 12. Validate the stored effect.
+    // 12. Validate the stored celebration effect.
     const allowedEffects = [
       "confetti",
       "hearts",
@@ -378,11 +376,13 @@ export async function POST(
       "petals",
     ] as const;
 
-    const celebrationEffect = allowedEffects.includes(
-      wish.celebration_effect
-    )
-      ? wish.celebration_effect
-      : "confetti";
+    const storedEffect = wish.celebration_effect;
+
+    const celebrationEffect =
+      typeof storedEffect === "string" &&
+      (allowedEffects as readonly string[]).includes(storedEffect)
+        ? storedEffect
+        : "confetti";
 
     // 13. Successful verification.
     attempts.delete(rateLimitKey);
