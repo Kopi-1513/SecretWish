@@ -26,18 +26,18 @@ import {
 type Photo = {
   id: string;
   name: string;
-  type: string;
-  size: number;
-  dataUrl: string;
-  storageId: string;
+  type?: string;
+  size?: number;
+  dataUrl?: string;
+  storageId?: string;
 };
 
 type MusicDraft = {
   name: string;
-  type: string;
-  size: number;
-  dataUrl: string;
-  storageId: string;
+  type?: string;
+  size?: number;
+  dataUrl?: string;
+  storageId?: string;
 };
 
 type WishDraft = {
@@ -77,6 +77,7 @@ export default function WishPhotosPage() {
   const [error, setError] = useState("");
   const [musicPlaying, setMusicPlaying] = useState(false);
   const [musicVolume, setMusicVolume] = useState(0.7);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -93,91 +94,147 @@ export default function WishPhotosPage() {
       try {
         const draft = JSON.parse(savedDraft) as WishDraft;
         const restoredPhotos: Photo[] = [];
+        const missingPhotos: string[] = [];
 
+        // Restore photos from IndexedDB first.
         for (const photo of draft.photos ?? []) {
-          // Support older drafts that stored data URLs.
-          if ("dataUrl" in photo && typeof photo.dataUrl === "string") {
-            const response = await fetch(photo.dataUrl);
-            const blob = await response.blob();
-            const storageId = photo.id;
+          const storageId = photo.storageId || photo.id;
 
-            await saveWishDraftMedia(storageId, blob);
+          let blob: Blob | null = null;
 
-            const url = URL.createObjectURL(blob);
-            objectUrls.push(url);
+          try {
+            blob = await getWishDraftMedia(storageId);
 
-            restoredPhotos.push({
-              id: photo.id,
-              name: photo.name,
-              type: blob.type,
-              size: blob.size,
-              dataUrl: url,
-              storageId,
-            });
-          } else {
-            const storageId = (photo as Photo).storageId ?? photo.id;
-            const blob = await getWishDraftMedia(storageId);
+            // Older drafts may have used the photo ID as the IndexedDB key.
+            if (!blob && photo.id !== storageId) {
+              blob = await getWishDraftMedia(photo.id);
+            }
 
-            if (!blob) continue;
+            // Migrate an older Base64/data URL draft if available.
+            if (!blob && photo.dataUrl) {
+              const response = await fetch(photo.dataUrl);
 
-            const url = URL.createObjectURL(blob);
-            objectUrls.push(url);
-
-            restoredPhotos.push({
-              id: photo.id,
-              name: photo.name,
-              type: blob.type,
-              size: blob.size,
-              dataUrl: url,
-              storageId,
-            });
+              if (response.ok) {
+                blob = await response.blob();
+                await saveWishDraftMedia(storageId, blob);
+              }
+            }
+          } catch (mediaError) {
+            console.error(
+              "PHOTO RESTORE ERROR:",
+              photo.name,
+              mediaError
+            );
           }
+
+          if (!blob) {
+            missingPhotos.push(photo.name);
+            continue;
+          }
+
+          const previewUrl = URL.createObjectURL(blob);
+          objectUrls.push(previewUrl);
+
+          restoredPhotos.push({
+            id: photo.id,
+            name: photo.name,
+            type: blob.type,
+            size: blob.size,
+            dataUrl: previewUrl,
+            storageId,
+          });
         }
 
+        // Restore music.
         let restoredMusic: MusicDraft | null = null;
 
         if (draft.music) {
-          const legacy = draft.music as MusicDraft;
-          let blob: Blob | null = null;
-          const storageId = legacy.storageId ?? crypto.randomUUID();
+          const oldMusic = draft.music;
+          const storageId =
+            oldMusic.storageId || crypto.randomUUID();
 
-          if (legacy.dataUrl) {
-            const response = await fetch(legacy.dataUrl);
-            blob = await response.blob();
-            await saveWishDraftMedia(storageId, blob);
-          } else {
-            blob = await getWishDraftMedia(storageId);
+          let musicBlob: Blob | null = null;
+
+          try {
+            musicBlob = await getWishDraftMedia(storageId);
+
+            if (!musicBlob && oldMusic.dataUrl) {
+              const response = await fetch(oldMusic.dataUrl);
+
+              if (response.ok) {
+                musicBlob = await response.blob();
+                await saveWishDraftMedia(storageId, musicBlob);
+              }
+            }
+          } catch (musicError) {
+            console.error("MUSIC RESTORE ERROR:", musicError);
           }
 
-          if (blob) {
-            const url = URL.createObjectURL(blob);
-            objectUrls.push(url);
+          if (musicBlob) {
+            const previewUrl = URL.createObjectURL(musicBlob);
+            objectUrls.push(previewUrl);
 
             restoredMusic = {
-              name: legacy.name,
-              type: blob.type || legacy.type,
-              size: blob.size,
-              dataUrl: url,
+              name: oldMusic.name,
+              type: musicBlob.type || oldMusic.type,
+              size: musicBlob.size,
+              dataUrl: previewUrl,
               storageId,
             };
           }
         }
 
-        if (!active) return;
+        if (!active) {
+          objectUrls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
 
         setPhotos(restoredPhotos);
         setMusic(restoredMusic);
+
+        if (missingPhotos.length > 0) {
+          setError(
+            `Some photo files could not be restored: ${missingPhotos.join(
+              ", "
+            )}. Please select those photos again.`
+          );
+        }
+
+        // Save only metadata in sessionStorage.
+        sessionStorage.setItem(
+          "secretwish_draft",
+          JSON.stringify({
+            ...draft,
+            photos: restoredPhotos.map(
+              ({ id, name, type, size, storageId }) => ({
+                id,
+                name,
+                type,
+                size,
+                storageId,
+              })
+            ),
+            music: restoredMusic
+              ? {
+                  name: restoredMusic.name,
+                  type: restoredMusic.type,
+                  size: restoredMusic.size,
+                  storageId: restoredMusic.storageId,
+                }
+              : null,
+          })
+        );
+
         setLoaded(true);
-      } catch (error) {
-        console.error("MEDIA DRAFT RESTORE ERROR:", error);
+      } catch (loadError) {
+        console.error("MEDIA DRAFT RESTORE ERROR:", loadError);
 
         if (active) {
           setError(
             "Unable to restore your selected files. Please select them again."
           );
+          setLoaded(true);
         }
-
-        if (active) setLoaded(true);
       }
     }
 
@@ -207,41 +264,56 @@ export default function WishPhotosPage() {
     }
 
     const selected = files.slice(0, remaining);
+    const validFiles: File[] = [];
 
-    const validFiles = selected.filter((file) => {
+    for (const file of selected) {
       if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-        setError(`${file.name}: only JPG, PNG and WEBP images are allowed.`);
-        return false;
+        setError(
+          `${file.name}: only JPG, PNG and WEBP images are allowed.`
+        );
+        continue;
       }
 
       if (file.size === 0) {
         setError(`${file.name}: the selected file is empty.`);
-        return false;
+        continue;
       }
 
       if (file.size > MAX_PHOTO_SIZE) {
-        setError(`${file.name} exceeds the 15 MB per-photo limit.`);
-        return false;
+        setError(
+          `${file.name} exceeds the 15 MB per-photo limit.`
+        );
+        continue;
       }
 
-      return true;
-    });
+      validFiles.push(file);
+    }
+
+    const newPhotos: Photo[] = [];
 
     try {
-      const newPhotos: Photo[] = [];
-
       for (const file of validFiles) {
         const storageId = crypto.randomUUID();
 
+        // Save the actual File/Blob under this exact ID.
         await saveWishDraftMedia(storageId, file);
+
+        // Verify that the saved file can be read back.
+        const savedBlob = await getWishDraftMedia(storageId);
+
+        if (!savedBlob) {
+          throw new Error(
+            `Unable to verify saved photo: ${file.name}`
+          );
+        }
 
         newPhotos.push({
           id: storageId,
           storageId,
           name: file.name,
-          type: file.type,
-          size: file.size,
-          dataUrl: URL.createObjectURL(file),
+          type: savedBlob.type,
+          size: savedBlob.size,
+          dataUrl: URL.createObjectURL(savedBlob),
         });
       }
 
@@ -250,12 +322,30 @@ export default function WishPhotosPage() {
       );
 
       if (files.length > remaining) {
-        setError(`Only ${remaining} more photo(s) can be added.`);
+        setError(
+          `Only ${remaining} more photo(s) can be added.`
+        );
       }
-    } catch (error) {
-      console.error("PHOTO STORAGE ERROR:", error);
+    } catch (photoError) {
+      console.error("PHOTO STORAGE ERROR:", photoError);
+
+      // Remove files saved during this failed selection.
+      await Promise.all(
+        newPhotos.map((photo) =>
+          deleteWishDraftMedia(photo.storageId || photo.id)
+        )
+      );
+
+      newPhotos.forEach((photo) => {
+        if (photo.dataUrl) {
+          URL.revokeObjectURL(photo.dataUrl);
+        }
+      });
+
       setError(
-        "Unable to save the selected photos in browser storage. Please try again."
+        photoError instanceof Error
+          ? photoError.message
+          : "Unable to save the selected photos. Please try again."
       );
     }
   }
@@ -263,14 +353,16 @@ export default function WishPhotosPage() {
   function removePhoto(id: string) {
     const photo = photos.find((item) => item.id === id);
 
-    if (photo) {
+    if (photo?.dataUrl) {
       URL.revokeObjectURL(photo.dataUrl);
     }
 
-    void deleteWishDraftMedia(photo?.storageId ?? id);
+    if (photo) {
+      void deleteWishDraftMedia(photo.storageId || photo.id);
+    }
 
     setPhotos((current) =>
-      current.filter((photo) => photo.id !== id)
+      current.filter((item) => item.id !== id)
     );
   }
 
@@ -285,7 +377,9 @@ export default function WishPhotosPage() {
     setError("");
 
     if (!ALLOWED_AUDIO_TYPES.includes(file.type)) {
-      setError("Choose an MP3, WAV, OGG, M4A or WEBM audio file.");
+      setError(
+        "Choose an MP3, WAV, OGG, M4A or WEBM audio file."
+      );
       return;
     }
 
@@ -301,26 +395,47 @@ export default function WishPhotosPage() {
 
     try {
       if (music) {
-        URL.revokeObjectURL(music.dataUrl);
-        await deleteWishDraftMedia(music.storageId);
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+
+        if (music.dataUrl) {
+          URL.revokeObjectURL(music.dataUrl);
+        }
+
+        await deleteWishDraftMedia(
+          music.storageId || ""
+        );
       }
 
       const storageId = crypto.randomUUID();
 
       await saveWishDraftMedia(storageId, file);
 
+      const savedBlob = await getWishDraftMedia(storageId);
+
+      if (!savedBlob) {
+        throw new Error("Unable to verify saved music.");
+      }
+
       setMusic({
         name: file.name,
-        dataUrl: URL.createObjectURL(file),
-        type: file.type,
-        size: file.size,
+        dataUrl: URL.createObjectURL(savedBlob),
+        type: savedBlob.type,
+        size: savedBlob.size,
         storageId,
       });
 
       setMusicPlaying(false);
-    } catch (error) {
-      console.error("MUSIC STORAGE ERROR:", error);
-      setError("Unable to save the selected music file.");
+    } catch (musicError) {
+      console.error("MUSIC STORAGE ERROR:", musicError);
+
+      setError(
+        musicError instanceof Error
+          ? musicError.message
+          : "Unable to save the selected music file."
+      );
     }
   }
 
@@ -331,8 +446,13 @@ export default function WishPhotosPage() {
     }
 
     if (music) {
-      URL.revokeObjectURL(music.dataUrl);
-      void deleteWishDraftMedia(music.storageId);
+      if (music.dataUrl) {
+        URL.revokeObjectURL(music.dataUrl);
+      }
+
+      if (music.storageId) {
+        void deleteWishDraftMedia(music.storageId);
+      }
     }
 
     setMusic(null);
@@ -346,6 +466,7 @@ export default function WishPhotosPage() {
 
     try {
       if (audio.paused) {
+        audio.volume = musicVolume;
         await audio.play();
         setMusicPlaying(true);
       } else {
@@ -353,7 +474,9 @@ export default function WishPhotosPage() {
         setMusicPlaying(false);
       }
     } catch {
-      setError("Unable to play this audio file in your browser.");
+      setError(
+        "Unable to play this audio file in your browser."
+      );
     }
   }
 
@@ -365,46 +488,101 @@ export default function WishPhotosPage() {
     }
   }
 
-  function handleContinue() {
-    const savedDraft = sessionStorage.getItem("secretwish_draft");
+  async function handleContinue() {
+    if (saving) return;
 
-    if (!savedDraft) {
-      router.replace("/dashboard/create");
-      return;
-    }
+    setSaving(true);
+    setError("");
 
     try {
+      const savedDraft = sessionStorage.getItem(
+        "secretwish_draft"
+      );
+
+      if (!savedDraft) {
+        router.replace("/dashboard/create");
+        return;
+      }
+
+      // Verify every photo exists in IndexedDB before navigating.
+      for (const photo of photos) {
+        const storageId = photo.storageId || photo.id;
+        const blob = await getWishDraftMedia(storageId);
+
+        if (!blob) {
+          throw new Error(
+            `Photo data is missing: ${photo.name}. Please remove and select it again.`
+          );
+        }
+
+        if (blob.size > MAX_PHOTO_SIZE) {
+          throw new Error(
+            `${photo.name} exceeds the 15 MB per-photo limit.`
+          );
+        }
+      }
+
+      // Verify selected music too.
+      if (music?.storageId) {
+        const musicBlob = await getWishDraftMedia(
+          music.storageId
+        );
+
+        if (!musicBlob) {
+          throw new Error(
+            "Music data is missing. Please select the music again."
+          );
+        }
+
+        if (musicBlob.size > MAX_MUSIC_SIZE) {
+          throw new Error(
+            "Birthday music exceeds the 8 MB limit."
+          );
+        }
+      }
+
       const draft = JSON.parse(savedDraft) as WishDraft;
+
+      const updatedDraft = {
+        ...draft,
+
+        // Store metadata only. Never store image data URLs here.
+        photos: photos.map(
+          ({ id, name, type, size, storageId }) => ({
+            id,
+            name,
+            type,
+            size,
+            storageId: storageId || id,
+          })
+        ),
+
+        music: music
+          ? {
+              name: music.name,
+              type: music.type,
+              size: music.size,
+              storageId: music.storageId,
+            }
+          : null,
+      };
 
       sessionStorage.setItem(
         "secretwish_draft",
-        JSON.stringify({
-          ...draft,
-          photos: photos.map(
-            ({ id, name, type, size, storageId }) => ({
-              id,
-              name,
-              type,
-              size,
-              storageId,
-            })
-          ),
-          music: music
-            ? {
-                name: music.name,
-                type: music.type,
-                size: music.size,
-                storageId: music.storageId,
-              }
-            : null,
-        })
+        JSON.stringify(updatedDraft)
       );
 
       router.push("/dashboard/create/review");
-    } catch {
+    } catch (continueError) {
+      console.error("CONTINUE ERROR:", continueError);
+
       setError(
-        "Unable to save your draft. Please try again."
+        continueError instanceof Error
+          ? continueError.message
+          : "Unable to save your draft. Please try again."
       );
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -421,7 +599,9 @@ export default function WishPhotosPage() {
       <div className="mx-auto max-w-3xl">
         <button
           type="button"
-          onClick={() => router.push("/dashboard/create/questions")}
+          onClick={() =>
+            router.push("/dashboard/create/questions")
+          }
           className="mb-10 flex items-center gap-2 text-sm text-[#a6a0ad] transition hover:text-[#d4af70]"
         >
           <ArrowLeft size={17} />
@@ -612,7 +792,7 @@ export default function WishPhotosPage() {
                   </p>
 
                   <p className="mt-1 text-xs text-[#918b99]">
-                    {(music.size / (1024 * 1024)).toFixed(2)} MB · Selected
+                    {((music.size ?? 0) / (1024 * 1024)).toFixed(2)} MB · Selected
                   </p>
                 </div>
 
@@ -704,11 +884,12 @@ export default function WishPhotosPage() {
         <button
           type="button"
           onClick={handleContinue}
-          className="mt-8 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-[#d4af70] to-[#a77b40] px-6 py-4 font-semibold text-[#111019] transition hover:brightness-110"
+          disabled={saving}
+          className="mt-8 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-[#d4af70] to-[#a77b40] px-6 py-4 font-semibold text-[#111019] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          Continue to review
-          <ArrowRight size={19} />
-          <Sparkles size={17} />
+          {saving ? "Checking your memories..." : "Continue to review"}
+          {!saving && <ArrowRight size={19} />}
+          {!saving && <Sparkles size={17} />}
         </button>
 
         <p className="mt-4 text-center text-xs text-[#77717f]">

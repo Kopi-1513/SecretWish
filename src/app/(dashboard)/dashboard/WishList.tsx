@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
 
+const PRODUCTION_SITE_URL = "https://secretwish-kopi.netlify.app";
+
 type Wish = {
   id: string;
   recipient_name: string;
@@ -42,6 +44,7 @@ type QRWish = {
 
 export default function WishList({ initialWishes }: WishListProps) {
   const [wishes, setWishes] = useState(initialWishes);
+  const [expandedWishId, setExpandedWishId] = useState<string | null>(null);
 
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
@@ -85,10 +88,12 @@ export default function WishList({ initialWishes }: WishListProps) {
   }
 
   async function getShareUrl(wish: Wish): Promise<string> {
+    const canonicalUrl = `${PRODUCTION_SITE_URL}/wish/${encodeURIComponent(wish.slug)}`;
     const cachedUrl = shareLinks[wish.id];
 
-    if (cachedUrl) return cachedUrl;
+    if (cachedUrl === canonicalUrl) return cachedUrl;
 
+    // Confirm that the wish is published before sharing it.
     const response = await fetch(
       `/api/wishes/${encodeURIComponent(wish.id)}/publish`,
       {
@@ -101,20 +106,18 @@ export default function WishList({ initialWishes }: WishListProps) {
 
     const result = await response.json();
 
-    if (!response.ok || !result.wish?.shareUrl) {
+    if (!response.ok) {
       throw new Error(
         result.error || "Unable to retrieve the sharing link."
       );
     }
 
-    const shareUrl = result.wish.shareUrl as string;
-
     setShareLinks((current) => ({
       ...current,
-      [wish.id]: shareUrl,
+      [wish.id]: canonicalUrl,
     }));
 
-    return shareUrl;
+    return canonicalUrl;
   }
 
   async function handlePublish(wish: Wish) {
@@ -143,11 +146,7 @@ export default function WishList({ initialWishes }: WishListProps) {
         );
       }
 
-      const shareUrl = result.wish?.shareUrl;
-
-      if (!shareUrl) {
-        throw new Error("The server did not return a sharing link.");
-      }
+      const shareUrl = `${PRODUCTION_SITE_URL}/wish/${encodeURIComponent(wish.slug)}`;
 
       setWishes((current) =>
         current.map((item) =>
@@ -372,7 +371,12 @@ export default function WishList({ initialWishes }: WishListProps) {
             </h2>
 
             <p className="mt-2 text-sm text-[#96919d]">
-              Hover over a wish to explore its details and sharing options.
+              <span className="hidden [@media(hover:hover)]:inline">
+                Hover over a wish to explore its details and sharing options.
+              </span>
+              <span className="[@media(hover:hover)]:hidden">
+                Tap a wish to explore its details and sharing options.
+              </span>
             </p>
           </div>
 
@@ -427,8 +431,18 @@ export default function WishList({ initialWishes }: WishListProps) {
                   key={wish.id}
                   className="group relative z-0 rounded-2xl border border-[#302a24] bg-[#111219] p-4 shadow-lg transition-all duration-300 ease-out hover:z-30 hover:scale-[1.025] hover:border-[#d4af70]/50 hover:shadow-[0_20px_65px_rgba(212,175,112,0.13)] sm:p-5"
                 >
-                  {/* Compact view: name, hearts and publish status */}
-                  <div className="flex items-center justify-between gap-3">
+                  {/* Tap the card header on touch devices to reveal details. */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedWishId((current) =>
+                        current === wish.id ? null : wish.id
+                      )
+                    }
+                    aria-expanded={expandedWishId === wish.id}
+                    aria-label={`${expandedWishId === wish.id ? "Hide" : "Show"} details for ${wish.recipient_name}`}
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                  >
                     <div className="flex min-w-0 items-center gap-3">
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#d4af70]/10">
                         <Gift size={20} className="text-[#d4af70]" />
@@ -476,10 +490,16 @@ export default function WishList({ initialWishes }: WishListProps) {
                         </span>
                       )}
                     </div>
-                  </div>
+                  </button>
 
-                  {/* Expanded details: revealed on hover or keyboard focus */}
-                  <div className="grid grid-rows-[0fr] opacity-0 transition-all duration-300 ease-in-out group-hover:grid-rows-[1fr] group-hover:opacity-100 group-focus-within:grid-rows-[1fr] group-focus-within:opacity-100">
+                  {/* Desktop: reveal on hover. Touch: reveal when the header is tapped. */}
+                  <div
+                    className={`grid transition-all duration-300 ease-in-out ${
+                      expandedWishId === wish.id
+                        ? "grid-rows-[1fr] opacity-100"
+                        : "grid-rows-[0fr] opacity-0"
+                    } [@media(hover:hover)]:group-hover:grid-rows-[1fr] [@media(hover:hover)]:group-hover:opacity-100 [@media(hover:hover)]:group-focus-within:grid-rows-[1fr] [@media(hover:hover)]:group-focus-within:opacity-100`}
+                  >
                     <div className="overflow-hidden">
                       <div className="pt-5">
                         <div className="mb-4 flex items-center gap-2 text-sm text-[#96919d]">
@@ -642,8 +662,13 @@ export default function WishList({ initialWishes }: WishListProps) {
                     </div>
                   </div>
 
-                  {/* Hover hint */}
-                  <div className="mt-3 text-center text-[10px] tracking-wider text-[#77717f] transition-opacity duration-200 group-hover:hidden">
+                  {/* Interaction hint */}
+                  <div className="mt-3 text-center text-[10px] tracking-wider text-[#77717f] sm:hidden">
+                    {expandedWishId === wish.id
+                      ? "TAP TO HIDE DETAILS"
+                      : "TAP TO VIEW DETAILS"}
+                  </div>
+                  <div className="mt-3 hidden text-center text-[10px] tracking-wider text-[#77717f] [@media(hover:hover)]:group-hover:hidden sm:block">
                     HOVER TO VIEW DETAILS
                   </div>
                 </article>
