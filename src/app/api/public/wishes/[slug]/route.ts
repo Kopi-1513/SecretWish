@@ -1,6 +1,6 @@
 
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 type RouteContext = {
   params: Promise<{
@@ -23,10 +23,12 @@ export async function GET(
       );
     }
 
-    const supabase = await createClient();
+    // Use the server-side admin client so public visitors
+    // can access published wishes without logging in.
+    // Never expose the service role key to the client.
+    const supabase = createAdminClient();
 
-    // Fetch only public information.
-    // Never expose secret messages, answer hashes, or private media paths.
+    // Fetch only public information from a published wish.
     const { data: wish, error: wishError } = await supabase
       .from("birthday_wishes")
       .select(
@@ -52,15 +54,20 @@ export async function GET(
       );
     }
 
-    // Fetch the public questions only.
-    const { data: questions, error: questionsError } = await supabase
-      .from("wish_questions")
-      .select("question_text, sort_order")
-      .eq("wish_id", wish.id)
-      .order("sort_order", { ascending: true });
+    // Fetch public question text only.
+    // Answer hashes are never returned.
+    const { data: questions, error: questionsError } =
+      await supabase
+        .from("wish_questions")
+        .select("question_text, sort_order")
+        .eq("wish_id", wish.id)
+        .order("sort_order", { ascending: true });
 
     if (questionsError) {
-      console.error("PUBLIC QUESTIONS FETCH ERROR:", questionsError);
+      console.error(
+        "PUBLIC QUESTIONS FETCH ERROR:",
+        questionsError
+      );
 
       return NextResponse.json(
         { error: "Unable to load the secret questions." },
@@ -89,7 +96,8 @@ export async function GET(
       {
         status: 200,
         headers: {
-          "Cache-Control": "no-store, no-cache, must-revalidate",
+          "Cache-Control":
+            "no-store, no-cache, must-revalidate",
         },
       }
     );
