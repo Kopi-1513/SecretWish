@@ -113,6 +113,8 @@ type WishDraft = {
   photos: Photo[];
   music?: MusicDraft | null;
   voice?: VoiceDraft | null;
+  celebrationEffects?: CelebrationEffect[];
+  // Legacy field for drafts created by the previous single-selection UI.
   celebrationEffect?: CelebrationEffect;
 };
 
@@ -397,7 +399,22 @@ export default function ReviewWishPage() {
           photos: restoredPhotos,
           music: restoredMusic,
           voice: parsed.voice ?? null,
-          celebrationEffect: parsed.celebrationEffect ?? "confetti",
+          celebrationEffects: (() => {
+            const savedEffects = Array.isArray(parsed.celebrationEffects)
+              ? parsed.celebrationEffects
+              : parsed.celebrationEffect
+                ? [parsed.celebrationEffect]
+                : ["confetti"];
+
+            const validEffects = savedEffects.filter(
+              (effect): effect is CelebrationEffect =>
+                CELEBRATION_EFFECTS.some((item) => item.id === effect)
+            );
+
+            return validEffects.length > 0
+              ? [...new Set(validEffects)]
+              : ["confetti"];
+          })(),
         };
 
         setDraft(restoredDraft);
@@ -816,10 +833,24 @@ export default function ReviewWishPage() {
       console.info("SECRETWISH: Selected photos:", draft.photos.length);
       console.info("SECRETWISH: Music selected:", !!draft.music);
       console.info("SECRETWISH: Voice selected:", !!draft.voice);
-      console.info(
-        "SECRETWISH: Celebration effect:",
-        draft.celebrationEffect ?? "confetti"
+      const selectedEffects: CelebrationEffect[] = Array.from(
+        new Set(
+          (draft.celebrationEffects?.length
+            ? draft.celebrationEffects
+            : draft.celebrationEffect
+              ? [draft.celebrationEffect]
+              : ["confetti"]
+          ).filter((effect): effect is CelebrationEffect =>
+            CELEBRATION_EFFECTS.some((item) => item.id === effect)
+          )
+        )
       );
+
+      if (selectedEffects.length === 0) {
+        selectedEffects.push("confetti");
+      }
+
+      console.info("SECRETWISH: Celebration effects:", selectedEffects);
 
       // 1. Initialize Supabase client.
       supabase = createClient();
@@ -983,13 +1014,7 @@ export default function ReviewWishPage() {
         };
       }
 
-      // 6. Validate celebration effect.
-      const selectedEffect: CelebrationEffect =
-        CELEBRATION_EFFECTS.some(
-          (effect) => effect.id === draft.celebrationEffect
-        )
-          ? draft.celebrationEffect!
-          : "confetti";
+      // 6. Celebration effects were normalized and validated above.
 
       // 7. Create birthday wish through the API.
       const response = await fetch("/api/wishes", {
@@ -1003,7 +1028,7 @@ export default function ReviewWishPage() {
           birthdayDate: draft.birthdayDate,
           secretMessage: draft.secretMessage,
           questions: draft.questions,
-          celebrationEffect: selectedEffect,
+          celebrationEffects: selectedEffects,
         }),
       });
 
@@ -1752,8 +1777,13 @@ export default function ReviewWishPage() {
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {CELEBRATION_EFFECTS.map((effect) => {
-              const selected =
-                (draft.celebrationEffect ?? "confetti") === effect.id;
+              const selected = (
+                draft.celebrationEffects?.length
+                  ? draft.celebrationEffects
+                  : draft.celebrationEffect
+                    ? [draft.celebrationEffect]
+                    : ["confetti"]
+              ).includes(effect.id);
 
               return (
                 <button
@@ -1762,8 +1792,24 @@ export default function ReviewWishPage() {
                   disabled={saving || !!createdWish}
                   onClick={() => {
                     setApiError("");
+                    const currentEffects: CelebrationEffect[] =
+                      draft.celebrationEffects?.length
+                        ? draft.celebrationEffects
+                        : draft.celebrationEffect
+                          ? [draft.celebrationEffect]
+                          : ["confetti"];
+
+                    const nextEffects: CelebrationEffect[] =
+                      currentEffects.includes(effect.id)
+                        ? currentEffects.filter((item) => item !== effect.id)
+                        : [...currentEffects, effect.id];
+
                     updateDraft({
-                      celebrationEffect: effect.id,
+                      celebrationEffects:
+                        nextEffects.length > 0
+                          ? nextEffects
+                          : ["confetti"],
+                      celebrationEffect: undefined,
                     });
                   }}
                   className={`group relative flex items-center gap-4 rounded-2xl border p-4 text-left transition duration-200 disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -1800,12 +1846,19 @@ export default function ReviewWishPage() {
           </div>
 
           <p className="mt-5 text-xs leading-5 text-[#918b99]">
-            Selected effect:{" "}
+            Selected effects:{" "}
             <span className="font-semibold text-[#d4af70]">
-              {CELEBRATION_EFFECTS.find(
-                (effect) =>
-                  effect.id === (draft.celebrationEffect ?? "confetti")
-              )?.name ?? "Confetti Explosion"}
+              {CELEBRATION_EFFECTS
+                .filter((effect) =>
+                  (draft.celebrationEffects?.length
+                    ? draft.celebrationEffects
+                    : draft.celebrationEffect
+                      ? [draft.celebrationEffect]
+                      : ["confetti"]
+                  ).includes(effect.id)
+                )
+                .map((effect) => effect.name)
+                .join(", ")}
             </span>
           </p>
         </section>
@@ -1823,7 +1876,7 @@ export default function ReviewWishPage() {
             </h3>
             <p className="mt-1 text-xs leading-6 text-[#a6a0ad]">
               Your birthday details, secret questions and selected celebration
-              effect will be saved. Your selected photos, music and optional
+              effects will be saved. Your selected photos, music and optional
               voice message will be uploaded to private storage when you
               create your wish.
             </p>

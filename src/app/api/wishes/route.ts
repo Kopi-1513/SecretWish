@@ -1,4 +1,3 @@
-
 import { NextResponse } from "next/server";
 import { randomBytes } from "node:crypto";
 import { hash } from "bcryptjs";
@@ -16,30 +15,43 @@ const celebrationEffectSchema = z.enum([
 const createWishSchema = z.object({
   recipientName: z.string().trim().min(1).max(100),
 
-  recipientEmail: z.union([
-    z.string().trim().email().max(255),
-    z.literal(""),
-  ]).optional(),
+  recipientEmail: z
+    .union([
+      z.string().trim().email().max(255),
+      z.literal(""),
+    ])
+    .optional(),
 
   birthdayDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 
   secretMessage: z.string().trim().min(1).max(5000),
 
-  questions: z.array(
-    z.object({
-      question: z.string().trim().min(1).max(200),
-      answer: z.string().trim().min(1).max(200),
-    })
-  ).min(1).max(10),
+  questions: z
+    .array(
+      z.object({
+        question: z.string().trim().min(1).max(200),
+        answer: z.string().trim().min(1).max(200),
+      })
+    )
+    .min(1)
+    .max(10),
 
-  celebrationEffect: celebrationEffectSchema.default("confetti"),
+  // Multiple celebration effects selected by the creator.
+  celebrationEffects: z
+    .array(celebrationEffectSchema)
+    .min(1)
+    .max(5)
+    .optional(),
+
+  // Backward compatibility with older clients.
+  celebrationEffect: celebrationEffectSchema.optional(),
 });
 
 export async function POST(request: Request) {
   try {
-    // 1. Verify the logged-in user
     const supabase = await createClient();
 
+    // 1. Check authentication.
     const {
       data: { user },
       error: authError,
@@ -47,15 +59,22 @@ export async function POST(request: Request) {
 
     if (authError || !user) {
       return NextResponse.json(
-        {
-          error: "You must be logged in to create a birthday wish.",
-        },
+        { error: "You must be logged in to create a birthday wish." },
         { status: 401 }
       );
     }
 
-    // 2. Validate incoming data
-    const body = await request.json();
+    // 2. Parse and validate request body.
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid request body." },
+        { status: 400 }
+      );
+    }
 
     const validation = createWishSchema.safeParse(body);
 
@@ -75,13 +94,19 @@ export async function POST(request: Request) {
       birthdayDate,
       secretMessage,
       questions,
-      celebrationEffect,
     } = validation.data;
 
-    // 3. Validate the actual calendar date
-    const parsedDate = new Date(
-      `${birthdayDate}T00:00:00.000Z`
-    );
+    // 3. Normalize selected effects and remove duplicates.
+    const selectedEffects = [
+      ...new Set(
+        validation.data.celebrationEffects?.length
+          ? validation.data.celebrationEffects
+          : [validation.data.celebrationEffect ?? "confetti"]
+      ),
+    ];
+
+    // 4. Validate that the date is a real calendar date.
+    const parsedDate = new Date(`${birthdayDate}T00:00:00.000Z`);
 
     if (
       Number.isNaN(parsedDate.getTime()) ||
@@ -93,7 +118,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Hash all answers on the server
+    // 5. Hash secret answers before saving them.
     const hashedQuestions = await Promise.all(
       questions.map(async (item, index) => ({
         question_text: item.question,
@@ -102,10 +127,10 @@ export async function POST(request: Request) {
       }))
     );
 
-    // 5. Generate a unique, unguessable sharing slug
+    // 6. Generate a private, unguessable wish slug.
     const slug = randomBytes(16).toString("hex");
 
-    // 6. Create the birthday wish
+    // 7. Save the birthday wish.
     const { data: wish, error: wishError } = await supabase
       .from("birthday_wishes")
       .insert({
@@ -114,11 +139,17 @@ export async function POST(request: Request) {
         recipient_email: recipientEmail || null,
         birthday_date: birthdayDate,
         secret_message: secretMessage,
-        celebration_effect: celebrationEffect,
+
+        // Keep the first selected effect for older code.
+        celebration_effect: selectedEffects[0],
+
+        // Save all selected effects.
+        celebration_effects: selectedEffects,
+
         slug,
         is_published: false,
       })
-      .select("id, slug, celebration_effect")
+      .select("id, slug, celebration_effect, celebration_effects")
       .single();
 
     if (wishError || !wish) {
@@ -130,7 +161,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 7. Save the questions and their hashes
+    // 8. Save the hashed secret questions.
     const questionsToInsert = hashedQuestions.map((item) => ({
       ...item,
       wish_id: wish.id,
@@ -140,14 +171,18 @@ export async function POST(request: Request) {
       .from("wish_questions")
       .insert(questionsToInsert);
 
+    // Roll back the wish if its questions could not be saved.
     if (questionsError) {
       console.error("QUESTION SAVE ERROR:", questionsError);
 
-      // Roll back the wish if questions could not be saved
-      await supabase
+      const { error: rollbackError } = await supabase
         .from("birthday_wishes")
         .delete()
         .eq("id", wish.id);
+
+      if (rollbackError) {
+        console.error("WISH ROLLBACK ERROR:", rollbackError);
+      }
 
       return NextResponse.json(
         { error: "Unable to save your secret questions." },
@@ -155,7 +190,7 @@ export async function POST(request: Request) {
       );
     }
 
-    // 8. Return safe information
+    // 9. Return the saved wish details.
     return NextResponse.json(
       {
         success: true,
@@ -164,18 +199,16 @@ export async function POST(request: Request) {
           id: wish.id,
           slug: wish.slug,
           celebrationEffect: wish.celebration_effect,
+          celebrationEffects: wish.celebration_effects,
         },
       },
       { status: 201 }
     );
-
   } catch (error) {
     console.error("CREATE WISH API ERROR:", error);
 
     return NextResponse.json(
-      {
-        error: "An unexpected error occurred. Please try again.",
-      },
+      { error: "An unexpected error occurred. Please try again." },
       { status: 500 }
     );
   }

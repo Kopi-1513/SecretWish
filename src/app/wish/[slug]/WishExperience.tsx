@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
@@ -32,6 +31,7 @@ type WishDetails = {
   questions: WishQuestion[];
 };
 
+
 type PrivatePhoto = {
   caption: string | null;
   url: string;
@@ -49,11 +49,21 @@ type PrivateVoice = {
   mimeType: string;
 };
 
+type CelebrationEffect =
+  | "confetti"
+  | "hearts"
+  | "sparkles"
+  | "fireworks"
+  | "petals";
+
 type Surprise = {
   secretMessage: string;
   photos: PrivatePhoto[];
   music: PrivateMusic | null;
   voice: PrivateVoice | null;
+  celebrationEffects: CelebrationEffect[];
+  // Backward compatibility with older API responses.
+  celebrationEffect?: CelebrationEffect;
 };
 
 type ApiResult<T> = T & {
@@ -109,6 +119,179 @@ function ConfettiCelebration() {
         />
       ))}
     </div>
+  );
+}
+
+const floatingEffects = Array.from({ length: 42 }, (_, index) => ({
+  id: index,
+  left: `${(index * 29) % 100}%`,
+  delay: (index % 14) * 0.18,
+  duration: 4 + (index % 5) * 0.7,
+  size: 14 + (index % 4) * 7,
+}));
+
+function HeartsCelebration() {
+  return (
+    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+      {floatingEffects.map((item) => (
+        <motion.div
+          key={item.id}
+          initial={{ y: "110vh", x: 0, opacity: 0, scale: 0.6 }}
+          animate={{
+            y: "-15vh",
+            x: [0, 25, -20, 18, 0],
+            opacity: [0, 1, 1, 0],
+            scale: [0.6, 1, 0.85],
+            rotate: [0, 18, -14, 0],
+          }}
+          transition={{
+            duration: item.duration,
+            delay: item.delay,
+            repeat: Infinity,
+            ease: "linear",
+          }}
+          className="absolute bottom-0 text-pink-400"
+          style={{ left: item.left, fontSize: item.size }}
+        >
+          ♥
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function SparklesCelebration() {
+  return (
+    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+      {floatingEffects.map((item) => (
+        <motion.div
+          key={item.id}
+          initial={{ opacity: 0, scale: 0, rotate: 0 }}
+          animate={{
+            opacity: [0, 1, 0.35, 1, 0],
+            scale: [0.2, 1.25, 0.7, 1.4, 0.2],
+            rotate: [0, 90, 180, 270, 360],
+            y: [0, -35, 20, -15, 0],
+          }}
+          transition={{
+            duration: 2.5 + (item.id % 4) * 0.5,
+            delay: item.delay,
+            repeat: Infinity,
+            ease: "easeInOut",
+          }}
+          className="absolute text-[#f5d88e] drop-shadow-[0_0_12px_rgba(245,216,142,0.9)]"
+          style={{
+            left: item.left,
+            top: `${(item.id * 23) % 95}%`,
+            fontSize: item.size,
+          }}
+        >
+          ✦
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function FireworksCelebration() {
+  const bursts = Array.from({ length: 9 }, (_, index) => ({
+    id: index,
+    left: `${12 + ((index * 31) % 76)}%`,
+    top: `${12 + ((index * 19) % 58)}%`,
+    delay: index * 0.45,
+    color: ["#f5d88e", "#e9a4c6", "#a78bfa", "#f5e8d0"][index % 4],
+  }));
+
+  return (
+    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+      {bursts.map((burst) => (
+        <motion.div
+          key={burst.id}
+          className="absolute h-2 w-2 rounded-full"
+          style={{
+            left: burst.left,
+            top: burst.top,
+            backgroundColor: burst.color,
+            boxShadow: `0 0 18px 5px ${burst.color}`,
+          }}
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{
+            scale: [0, 1, 0.2, 0],
+            opacity: [0, 1, 0.8, 0],
+            boxShadow: [
+              `0 0 0px 0px ${burst.color}`,
+              `0 0 22px 12px ${burst.color}`,
+              `0 0 38px 24px ${burst.color}55`,
+              `0 0 0px 0px ${burst.color}`,
+            ],
+          }}
+          transition={{
+            duration: 2.2,
+            delay: burst.delay,
+            repeat: Infinity,
+            repeatDelay: 1.2,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PetalsCelebration() {
+  return (
+    <div className="pointer-events-none fixed inset-0 z-50 overflow-hidden">
+      {floatingEffects.map((item) => (
+        <motion.div
+          key={item.id}
+          initial={{ y: -40, x: 0, opacity: 0, rotate: 0 }}
+          animate={{
+            y: "110vh",
+            x: [0, 45, -35, 30, -10],
+            opacity: [0, 0.95, 0.9, 0],
+            rotate: [0, 100, 220, 360],
+          }}
+          transition={{
+            duration: item.duration + 1,
+            delay: item.delay,
+            repeat: Infinity,
+            ease: "linear",
+          }}
+          className="absolute top-0 text-pink-300 drop-shadow-[0_0_8px_rgba(244,180,210,0.35)]"
+          style={{ left: item.left, fontSize: item.size }}
+        >
+          ❀
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
+function CelebrationEffectRenderer({
+  effects,
+}: {
+  effects: CelebrationEffect[];
+}) {
+  const selectedEffects =
+    effects.length > 0 ? effects : (["confetti"] as CelebrationEffect[]);
+
+  return (
+    <>
+      {selectedEffects.map((effect) => {
+        switch (effect) {
+          case "hearts":
+            return <HeartsCelebration key={effect} />;
+          case "sparkles":
+            return <SparklesCelebration key={effect} />;
+          case "fireworks":
+            return <FireworksCelebration key={effect} />;
+          case "petals":
+            return <PetalsCelebration key={effect} />;
+          case "confetti":
+          default:
+            return <ConfettiCelebration key={effect} />;
+        }
+      })}
+    </>
   );
 }
 
@@ -185,7 +368,6 @@ function BirthdayCakeAnimation() {
     </motion.div>
   );
 }
-
 function LivesDisplay({ remainingLives }: { remainingLives: number }) {
   return (
     <div className="mt-7 flex flex-col items-center">
@@ -393,7 +575,10 @@ export default function WishExperience({
 
       const result = (await response.json()) as ApiResult<{
         success: boolean;
-        surprise: Surprise;
+        surprise: Omit<Surprise, "celebrationEffects"> & {
+          celebrationEffects?: CelebrationEffect[];
+          celebrationEffect?: CelebrationEffect;
+        };
       }>;
 
       if (typeof result.remainingLives === "number") {
@@ -437,7 +622,35 @@ export default function WishExperience({
         throw new Error("The surprise could not be loaded.");
       }
 
-      setSurprise(result.surprise);
+      const allowedEffects = [
+        "confetti",
+        "hearts",
+        "sparkles",
+        "fireworks",
+        "petals",
+      ] as const;
+
+      const receivedEffects: string[] = Array.isArray(
+        result.surprise.celebrationEffects
+      )
+        ? result.surprise.celebrationEffects
+        : result.surprise.celebrationEffect
+          ? [result.surprise.celebrationEffect]
+          : ["confetti"];
+
+      const celebrationEffects = [
+        ...new Set(
+          receivedEffects.filter((effect) =>
+            (allowedEffects as readonly string[]).includes(effect)
+          )
+        ),
+      ] as CelebrationEffect[];
+
+      setSurprise({
+        ...result.surprise,
+        celebrationEffects:
+          celebrationEffects.length > 0 ? celebrationEffects : ["confetti"],
+      });
     } catch (err) {
       setError(
         err instanceof Error
@@ -658,8 +871,7 @@ export default function WishExperience({
                     {error}
                   </motion.div>
                 )}
-
-                <button
+                                <button
                   type="submit"
                   disabled={verifying || hasLost}
                   className="mt-8 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-[#e5c17e] to-[#a77b40] px-6 py-4 font-semibold text-[#171019] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
@@ -696,7 +908,10 @@ export default function WishExperience({
               animate={{ opacity: 1, scale: 1 }}
               className="text-center"
             >
-              <ConfettiCelebration />
+              {/* Selected celebration effect appears only after verification */}
+              <CelebrationEffectRenderer
+                effects={surprise.celebrationEffects}
+              />
 
               <motion.div
                 initial={{ y: 30, opacity: 0 }}
@@ -866,7 +1081,9 @@ export default function WishExperience({
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: surprise.music || surprise.voice ? 0.9 : 0.8 }}
+                  transition={{
+                    delay: surprise.music || surprise.voice ? 0.9 : 0.8,
+                  }}
                   className="relative z-10 mt-12"
                 >
                   <div className="mb-6 flex items-center justify-center gap-3">
